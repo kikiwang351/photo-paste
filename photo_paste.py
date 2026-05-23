@@ -367,11 +367,10 @@ def make_inline_image_xml(rId, emu_cx, emu_cy, pic_id):
 
 
 def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb, label_merged=True):
-    tmp_dir  = Path(tempfile.gettempdir()) / "pp_tmp"
     work_dir = Path(tempfile.gettempdir()) / "pp_work"
-    for d in (tmp_dir, work_dir):
-        if d.exists(): shutil.rmtree(d)
-        d.mkdir()
+    if work_dir.exists(): shutil.rmtree(work_dir)
+    work_dir.mkdir()
+    _stamp_tmps = []   # 追蹤 stamp_label 產生的暫存檔，最後統一刪除
 
     with zipfile.ZipFile(template, 'r') as z:
         z.extractall(work_dir)
@@ -522,7 +521,9 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             for k,sp in enumerate(paths):
                 # 合併頁：依設定燒上 a/b/c 標示
                 if label_merged and k < len(LABEL_CHARS):
-                    try: sp = stamp_label(sp, LABEL_CHARS[k])
+                    try:
+                        sp = stamp_label(sp, LABEL_CHARS[k])
+                        _stamp_tmps.append(sp)
                     except Exception: pass
                 ext=Path(sp).suffix.lower().lstrip(".")
                 mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
@@ -647,7 +648,10 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             if file.is_file():
                 zout.write(str(file), str(file.relative_to(work_dir)))
 
-    shutil.rmtree(work_dir); shutil.rmtree(tmp_dir)
+    shutil.rmtree(work_dir)
+    for f in _stamp_tmps:
+        try: os.remove(f)
+        except Exception: pass
     log_cb(f"\n🎉 完成！輸出檔案：{output}")
 
 
@@ -2158,8 +2162,7 @@ class App:
 
         def worker():
             try:
-                import copy as _copy
-                process_docx(self.template_path, word_out, self.pages,
+                process_docx(self.template_path, word_out, saved_pages,
                              self.desc_var.get().strip(),
                              self.loc_var.get().strip(),
                              self.start_var.get(), self.log,
