@@ -545,7 +545,8 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             ap=paths[0]
             ext=Path(ap).suffix.lower().lstrip(".")
             mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
-                  "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff"}.get(ext,"image/jpeg")
+                  "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff",
+                  "webp":"image/webp"}.get(ext,"image/jpeg")
             ensure_ct(ext,mime)
             dn=f"image_p{gidx+1:03d}.{ext}"
             shutil.copy2(ap, media_dir/dn)
@@ -903,7 +904,8 @@ class ThumbCard(tk.Frame):
 
         fix_ime_entry(sort_entry)
 
-        for w in (self, self.img_label, self.num_label):
+        for w in (self, self.img_label, self.num_label, self.num_label2,
+                  self._img_frame, info_row):
             w.bind("<Button-1>", self._on_click)
 
     def _make_preview(self, max_w, card_w=None):
@@ -1471,7 +1473,7 @@ class App:
         if result[0] == "files":
             paths = filedialog.askopenfilenames(
                 title="選擇照片（可複選）",
-                filetypes=[("圖片","*.jpg *.jpeg *.png *.bmp *.gif *.tiff"),("所有","*.*")])
+                filetypes=[("圖片","*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.webp"),("所有","*.*")])
             if not paths: return
             final_paths = list(paths)
         else:
