@@ -120,38 +120,38 @@ def get_thumb(path, max_w, max_h):
         return Image.new("RGB", (min(max_w,4), min(max_h,3)), (220,225,210))
 
 
-# 皮克敏配色
+# Notion 現代風配色
 C = {
-    "bg":         "#f0f4e8",
-    "bg2":        "#e8edd8",
-    "bg3":        "#dde5c8",
-    "topbar":     "#4a7c3f",
-    "topbar2":    "#5a9249",
-    "btnbar":     "#c8dba0",
-    "editbar":    "#d4e8b0",
-    "btn_green":  "#4a7c3f",
-    "btn_brown":  "#7d5a3c",
-    "btn_blue":   "#3a6fa8",
-    "btn_purple": "#7b4fa8",
-    "btn_red":    "#c0392b",
-    "btn_gray":   "#8a9a78",
-    "btn_dark":   "#5a6a4a",
-    "text":       "#2c3e1a",
-    "text2":      "#4a5a3a",
-    "subtext":    "#6a7a5a",
-    "card":       "#ffffff",
-    "card_sel":   "#c8e6a0",
-    "card_border":"#a0b878",
-    "log_bg":     "#2c3e1a",
-    "log_fg":     "#a8e06a",
+    "bg":         "#f7f7f5",   # 主背景（Notion 米白）
+    "bg2":        "#efefed",   # 縮圖畫布背景
+    "bg3":        "#f0f0ee",   # 右側面板
+    "topbar":     "#191919",   # 頂列深黑（Notion 風）
+    "topbar2":    "#2f2f2f",
+    "btnbar":     "#f0f0ee",   # 工具列背景
+    "editbar":    "#e8e8e6",   # 圖片編輯列（略深）
+    "btn_green":  "#2383e2",   # 主要動作 — 藍
+    "btn_brown":  "#cb912f",   # 儲存 — 琥珀
+    "btn_blue":   "#0f7b6c",   # 匯入 — 青綠
+    "btn_purple": "#9065b0",   # 合併 — 紫
+    "btn_red":    "#e03e3e",   # 移除 — 紅
+    "btn_gray":   "#9b9a97",   # 灰色輔助
+    "btn_dark":   "#37352f",   # 深色按鈕
+    "text":       "#37352f",   # 主文字（Notion 深棕黑）
+    "text2":      "#6b6b68",
+    "subtext":    "#9b9a97",   # 輔助說明文字
+    "card":       "#ffffff",   # 卡片白
+    "card_sel":   "#dbeafe",   # 選取卡片（藍底）
+    "card_border":"#e3e3e1",   # 卡片邊框
+    "log_bg":     "#191919",   # 記錄區黑底
+    "log_fg":     "#2383e2",   # 記錄文字藍
     "entry_bg":   "#ffffff",
-    "entry_bd":   "#a0b878",
-    "right_bg":   "#eef2e0",
-    "sep":        "#b0c890",
+    "entry_bd":   "#e3e3e1",
+    "right_bg":   "#f7f7f5",
+    "sep":        "#e3e3e1",   # 分隔線
     # 向下相容舊引用
-    "purple":     "#7b4fa8",
-    "green":      "#4a7c3f",
-    "red":        "#c0392b",
+    "purple":     "#9065b0",
+    "green":      "#2383e2",
+    "red":        "#e03e3e",
 }
 
 W   = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -1018,8 +1018,8 @@ class ThumbCard(tk.Frame):
     def set_selected(self, val):
         self._selected = val
         color = C["card_sel"] if val else C["card"]
-        self.config(bg=color, highlightbackground="#3d5afe" if val else C["card"],
-                    highlightthickness=2 if val else 0)
+        self.config(bg=color, highlightbackground="#2383e2" if val else C["card_border"],
+                    highlightthickness=2 if val else 1)
         self.img_label.config(bg=color)
         self.num_label.config(bg=color)
         if hasattr(self, "num_label2"): self.num_label2.config(bg=color)
@@ -1153,24 +1153,28 @@ class App:
         top = tk.Frame(self.root, bg=C["topbar"])
         top.pack(fill="x")
 
-        tk.Label(top, text="🌿  照片黏貼表自動填入工具",
-                 fg="white", bg=C["topbar"],
-                 font=("", 13, "bold")).pack(side="left", padx=14, pady=8)
+        tk.Label(top, text="  照片黏貼工具",
+                 fg="#ffffff", bg=C["topbar"],
+                 font=("", 12, "bold")).pack(side="left", padx=16, pady=10)
 
-        def tb(text, cmd, color):
-            tk.Button(top, text=text, command=cmd, bg=color, fg="white",
-                      relief="flat", padx=12, pady=5,
-                      font=("", 9, "bold"), cursor="hand2", bd=0).pack(
-                      side="right", padx=4, pady=6)
+        def tb(text, cmd, color, fg="white"):
+            tk.Button(top, text=text, command=cmd, bg=color, fg=fg,
+                      relief="flat", padx=14, pady=6,
+                      font=("", 9, "bold"), cursor="hand2", bd=0,
+                      activebackground=color, activeforeground=fg).pack(
+                      side="right", padx=3, pady=8)
 
-        tb("▶ 開始製作",   self.run,            C["btn_green"])
-        tb("💾 儲存專案",  self.save_project,   C["btn_brown"])
-        tb("📥 匯入專案",  self.load_project,   C["btn_blue"])
-        tb("📂 選擇模板",  self.pick_template,  C["btn_dark"])
+        tb("▶  開始製作",  self.run,            "#2383e2")
+        tb("💾  儲存",     self.save_project,   "#2f2f2f")
+        tb("📥  匯入",     self.load_project,   "#2f2f2f")
+        tb("📂  模板",     self.pick_template,  "#2f2f2f")
 
-        self.template_lbl = tk.Label(top, text="尚未選擇模板",
-                                     fg="#a8d5b5", bg=C["topbar"], font=("", 8))
-        self.template_lbl.pack(side="right", padx=6)
+        # 分隔線
+        tk.Frame(top, bg="#333333", width=1).pack(side="right", fill="y", pady=8, padx=4)
+
+        self.template_lbl = tk.Label(top, text="未選擇模板",
+                                     fg="#888888", bg=C["topbar"], font=("", 8))
+        self.template_lbl.pack(side="right", padx=8)
 
         # ── 主體 ──
         main = tk.Frame(self.root, bg=C["bg"])
@@ -1180,58 +1184,70 @@ class App:
         left = tk.Frame(main, bg=C["bg"])
         left.pack(side="left", fill="both", expand=True)
 
-        # 按鈕列
-        sec1 = tk.Frame(left, bg=C["btnbar"])
-        sec1.pack(fill="x")
-        tk.Label(sec1, text=" 🗂  頁面管理", fg=C["text"],
-                 bg=C["btnbar"], font=("",9,"bold")).pack(side="left", padx=8, pady=6)
+        # ── 工具列（統一一條，分組用間距） ──
+        toolbar = tk.Frame(left, bg=C["btnbar"], pady=0)
+        toolbar.pack(fill="x")
 
-        btn_row = sec1
+        def vsep(row):
+            tk.Frame(row, bg=C["sep"], width=1).pack(side="left", fill="y", pady=6, padx=5)
 
-        def bb(text, cmd, color, row=sec1):
+        def bb(text, cmd, color="#37352f", row=toolbar):
             tk.Button(row, text=text, command=cmd,
                       bg=color, fg="white", relief="flat",
-                      padx=9, pady=4, font=("",9),
-                      cursor="hand2", bd=0).pack(side="left", padx=2, pady=5)
+                      padx=10, pady=5, font=("", 9),
+                      cursor="hand2", bd=0,
+                      activebackground=color, activeforeground="white"
+                      ).pack(side="left", padx=2, pady=6)
 
-        bb("＋ 新增照片",  self.add_photos,      C["btn_blue"])   # 加在最後
-        bb("📌 插入照片",  self.insert_photos,    "#1565a0")       # 插在選取頁後
-        bb("🌿 空白頁",    self.add_blank,        C["btn_dark"])
-        bb("← 左移",      self.move_left,        C["btn_brown"])
-        bb("→ 右移",      self.move_right,       C["btn_brown"])
-        bb("🔗 合併",       self.merge_selected,   C["purple"])
-        bb("✂ 拆開",       self.unmerge_selected, "#4e342e")
-        bb("✕ 移除",       self.remove_selected,  "#b71c1c")
-        bb("🗑 清除全部",   self.clear_all,        "#424242")
-        bb("↩ 上一步",     self.undo,             "#5d4037")
-        bb("↪ 下一步",     self.redo,             "#4a3728")
-        bb("⇅ 顛倒順序",   self.reverse_order,   "#4a5a6a")
-        bb("🔢 依序號排",   self.sort_by_key,      "#3a5a4a")
+        # 群組①：新增
+        bb("＋ 新增",   self.add_photos,      "#2383e2")
+        bb("📌 插入",   self.insert_photos,   "#1a6fc4")
+        bb("空白頁",    self.add_blank,       "#9b9a97")
+        vsep(toolbar)
+        # 群組②：排列
+        bb("← 左移",   self.move_left,       "#37352f")
+        bb("→ 右移",   self.move_right,      "#37352f")
+        bb("⇅ 顛倒",   self.reverse_order,   "#37352f")
+        bb("🔢 排序",   self.sort_by_key,     "#37352f")
+        vsep(toolbar)
+        # 群組③：合併
+        bb("🔗 合併",   self.merge_selected,  "#9065b0")
+        bb("✂ 拆開",   self.unmerge_selected,"#6d4c9e")
+        vsep(toolbar)
+        # 群組④：刪除
+        bb("✕ 移除",   self.remove_selected, "#e03e3e")
+        bb("清除全部",  self.clear_all,       "#9b9a97")
+        vsep(toolbar)
+        # 群組⑤：歷史
+        bb("↩ 上一步", self.undo,            "#37352f")
+        bb("↪ 下一步", self.redo,            "#37352f")
 
+        # ── 圖片編輯列 ──
         sec2 = tk.Frame(left, bg=C["editbar"])
         sec2.pack(fill="x")
-        tk.Label(sec2, text=" 🖼  圖片編輯", fg=C["text"],
-                 bg=C["editbar"], font=("",9,"bold")).pack(side="left", padx=8, pady=6)
 
         def eb(text, cmd):
             tk.Button(sec2, text=text, command=cmd,
-                      bg=C["btn_dark"], fg="white", relief="flat",
-                      padx=10, pady=4, font=("",9),
-                      cursor="hand2", bd=0).pack(side="left", padx=2, pady=5)
+                      bg=C["editbar"], fg=C["text"], relief="flat",
+                      padx=10, pady=4, font=("", 9),
+                      cursor="hand2", bd=0,
+                      activebackground=C["sep"]).pack(side="left", padx=1, pady=4)
 
-        eb("↺ 左轉90°",  self.rotate_left)
-        eb("↻ 右轉90°",  self.rotate_right)
-        eb("↔ 左右翻轉", self.flip_h)
-        eb("↕ 上下翻轉", self.flip_v)
-        eb("✂ 裁切",     self.open_crop)
+        tk.Label(sec2, text="圖片編輯：", fg=C["subtext"],
+                 bg=C["editbar"], font=("", 8)).pack(side="left", padx=(10, 0), pady=4)
+        eb("↺ 左轉",   self.rotate_left)
+        eb("↻ 右轉",   self.rotate_right)
+        eb("↔ 橫翻",   self.flip_h)
+        eb("↕ 縱翻",   self.flip_v)
+        eb("✂ 裁切",   self.open_crop)
 
         hint_row = tk.Frame(left, bg=C["bg"])
-        hint_row.pack(fill="x", padx=6, pady=2)
+        hint_row.pack(fill="x", padx=10, pady=(4,2))
         tk.Label(hint_row,
-                 text="  💡 點選縮圖（綠框）後操作；Ctrl+點選可多選再合併",
-                 fg=C["subtext"], bg=C["bg"], font=("",8)).pack(side="left")
+                 text="點選卡片後操作　Ctrl + 點選可多選",
+                 fg=C["subtext"], bg=C["bg"], font=("", 8)).pack(side="left")
         self.page_count_lbl = tk.Label(hint_row, text="共 0 頁",
-                 fg=C["btn_green"], bg=C["bg"], font=("",9,"bold"))
+                 fg=C["btn_green"], bg=C["bg"], font=("", 8, "bold"))
         self.page_count_lbl.pack(side="right", padx=8)
 
         # 縮圖畫布
@@ -1259,11 +1275,11 @@ class App:
         right.pack_propagate(False)
 
         def sep():
-            tk.Frame(right, bg="#2d3250", height=1).pack(fill="x", padx=10, pady=4)
+            tk.Frame(right, bg=C["sep"], height=1).pack(fill="x", padx=12, pady=6)
 
         def lbl(t):
             tk.Label(right, text=t, fg=C["subtext"], bg=C["bg3"],
-                     anchor="w", font=("", 9, "bold")).pack(fill="x", padx=14, pady=(10,2))
+                     anchor="w", font=("", 8, "bold")).pack(fill="x", padx=14, pady=(8,2))
 
         def ent(var, h=5):
             e = tk.Entry(right, textvariable=var, bg=C["entry_bg"], fg=C["text"],
@@ -1273,8 +1289,8 @@ class App:
             fix_ime_entry(e)
             return e
 
-        tk.Label(right, text="⚙  設定", fg=C["text"], bg=C["bg3"],
-                 font=("", 11, "bold")).pack(pady=(14,4), padx=14, anchor="w")
+        tk.Label(right, text="設定", fg=C["text"], bg=C["bg3"],
+                 font=("", 10, "bold")).pack(pady=(14, 4), padx=14, anchor="w")
         sep()
 
         lbl("📝  說明文字（共用預設）")
@@ -1342,8 +1358,8 @@ class App:
         sep()
         lbl("執行記錄")
         self.log_text = tk.Text(right, bg=C["log_bg"], fg=C["log_fg"],
-                                font=("Consolas", 9), state="disabled",
-                                relief="flat", bd=0)
+                                font=("Consolas", 8), state="disabled",
+                                relief="flat", bd=0, padx=8, pady=6)
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0,10))
 
     # ── 版面事件 ──
