@@ -33,3 +33,5 @@ jobs:
         with:
           files: dist/photo-helper.exe
           name: 版本 ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: true
