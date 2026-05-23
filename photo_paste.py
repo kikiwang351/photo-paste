@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import platform
 IS_MAC = platform.system() == 'Darwin'
 
-VERSION = "1.1"
+VERSION = "1.2"
 GITHUB_REPO = "kikiwang351/photo-paste"
 
 def check_for_update(root):
@@ -68,7 +68,12 @@ def _do_update(exe_url):
             f'start "" "{current_exe}"\ndel "%~f0"\n',
             encoding="gbk"
         )
-        subprocess.Popen(str(bat), shell=True)
+        DETACHED = 0x00000008
+        CREATE_NEW = 0x00000200
+        subprocess.Popen(
+            str(bat), shell=True,
+            creationflags=DETACHED | CREATE_NEW
+        )
         sys.exit(0)
     except Exception as e:
         messagebox.showerror("更新失敗", f"自動更新失敗，請手動下載新版本。\n\n{e}")
@@ -1079,7 +1084,7 @@ class ThumbCard(tk.Frame):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("照片黏貼表自動填入工具  ·  By Kiki")
+        self.root.title(f"照片黏貼表自動填入工具 v{VERSION}  ·  By Kiki")
         self.root.configure(bg=C["bg"])
         self.root.minsize(900, 620)
 
@@ -1468,7 +1473,9 @@ class App:
     def remove_selected(self):
         if self._selected is None: return
         self._save_history()
-        self.pages.pop(self._selected.index)
+        idxs = self.get_selected_indices()
+        for i in sorted(idxs, reverse=True):
+            self.pages.pop(i)
         self._selected = None; self._selected_multi = []
         self._schedule_rebuild()
 
