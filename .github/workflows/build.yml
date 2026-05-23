@@ -20,11 +20,16 @@ jobs:
       - name: Install dependencies
         run: pip install pyinstaller pillow lxml
 
+      - name: Update version number
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          (Get-Content photo_paste.py) -replace 'VERSION = ".*"', "VERSION = `"$version`"" | Set-Content photo_paste.py
+
       - name: Build EXE
         run: pyinstaller 照片黏貼工具.spec
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/照片黏貼工具.exe
+          files: dist/相片黏貼小幫手.exe
           name: 版本 ${{ github.ref_name }}
