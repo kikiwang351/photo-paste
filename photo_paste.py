@@ -860,6 +860,7 @@ class ThumbCard(tk.Frame):
         self.desc_entry.pack(fill="x", padx=6, pady=(0,1), ipady=2)
         fix_ime_entry(self.desc_entry)
         self.desc_var.trace_add("write", self._on_desc_change)
+        self.desc_entry.bind("<FocusIn>", lambda e: self.app.select_card(self))
 
         # 地點輸入框
         _initial_loc = page.get("loc") if page.get("loc") is not None else (app.loc_var.get() if hasattr(app, "loc_var") else "")
@@ -871,6 +872,7 @@ class ThumbCard(tk.Frame):
         self.loc_entry.pack(fill="x", padx=6, pady=(0,2), ipady=1)
         fix_ime_entry(self.loc_entry)
         self.loc_var2.trace_add("write", self._on_loc_change)
+        self.loc_entry.bind("<FocusIn>", lambda e: self.app.select_card(self))
 
         # 排序號和標題放同一列
         info_row = tk.Frame(self, bg=C["card"])
@@ -901,6 +903,7 @@ class ThumbCard(tk.Frame):
                  font=("",8)).pack(side="right")
         sort_entry.bind("<FocusOut>", lambda e: self._on_sort_change())
         sort_entry.bind("<Return>",   lambda e: self._on_sort_change())
+        sort_entry.bind("<FocusIn>",  lambda e: self.app.select_card(self))
 
         fix_ime_entry(sort_entry)
 
@@ -1832,13 +1835,17 @@ class App:
                 if id(page) not in seen_ids and page.get("type") != "blank" and len(page.get("paths",[])) == 1:
                     targets.append(page)
                     seen_ids.add(id(page))
-        if not targets and self._selected:
+        # 不管 _selected_multi 有無，_selected 若是單張照片也要加入
+        if self._selected:
             page = self._selected.page
-            if page.get("type") != "blank" and len(page.get("paths",[])) == 1:
+            if id(page) not in seen_ids and page.get("type") != "blank" and len(page.get("paths",[])) == 1:
                 targets.append(page)
+                seen_ids.add(id(page))
 
         if not targets:
-            messagebox.showinfo("提示", "請先選取照片（合併頁請先拆開）"); return
+            if self._selected is None:
+                messagebox.showinfo("提示", "請先點選要編輯的照片縮圖，再使用圖片編輯功能"); return
+            messagebox.showinfo("提示", "合併頁無法直接編輯，請先按「✂ 拆開」再編輯"); return
 
         self._save_history()
         total = len(targets)
@@ -1878,12 +1885,12 @@ class App:
 
     def open_crop(self):
         if self._selected is None:
-            messagebox.showinfo("🌱 提示", "請先點選一張照片"); return
+            messagebox.showinfo("🌱 提示", "請先點選要裁切的照片縮圖"); return
         page = self._selected.page
         if page.get("type") == "blank":
             messagebox.showinfo("🌱 提示", "空白頁無法編輯"); return
         if len(page.get("paths",[])) != 1:
-            messagebox.showinfo("🌱 提示", "請先拆開合併頁再編輯"); return
+            messagebox.showinfo("🌱 提示", "合併頁無法直接裁切，請先按「✂ 拆開」再裁切"); return
         # 永遠從原始圖開始裁切
         orig = page.get("orig_path", page["paths"][0])
         sel_idx = self._selected.index
