@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import platform
 IS_MAC = platform.system() == 'Darwin'
 
-VERSION = "1.5"
+VERSION = "1.6"
 GITHUB_REPO = "kikiwang351/photo-paste"
 
 def check_for_update(root):
@@ -57,21 +57,21 @@ def _prompt_update(latest, exe_url):
 def _do_update(exe_url):
     import urllib.request, subprocess
     current_exe = Path(sys.executable)
-    new_exe = current_exe.with_suffix(".new")
+    new_exe = current_exe.parent / (current_exe.stem + "_new.exe")
     try:
         messagebox.showinfo("更新中", "正在下載新版本，請稍候...\n下載完成後程式會自動重啟。")
         urllib.request.urlretrieve(exe_url, str(new_exe))
-        bat = Path(tempfile.mktemp(suffix=".bat"))
-        bat.write_text(
-            f'@echo off\r\n'
-            f'timeout /t 3 /nobreak > nul\r\n'
-            f'move /y "{new_exe}" "{current_exe}"\r\n'
-            f'start "" "{current_exe}"\r\n'
-            f'del "%~f0"\r\n',
-            encoding="gbk"
+        # 用 PowerShell 替換檔案並重啟，支援中文路徑
+        ps = (
+            f"Start-Sleep -Seconds 3; "
+            f"Move-Item -Force '{new_exe}' '{current_exe}'; "
+            f"Start-Process '{current_exe}'"
         )
-        os.startfile(str(bat))
-        sys.exit(0)
+        subprocess.Popen(
+            ["powershell", "-WindowStyle", "Hidden", "-Command", ps],
+            creationflags=0x00000008 | 0x00000200
+        )
+        os._exit(0)  # 強制立即結束，不經過 tkinter
     except Exception as e:
         messagebox.showerror("更新失敗", f"自動更新失敗，請手動下載新版本。\n\n{e}")
         if new_exe.exists():
