@@ -63,17 +63,14 @@ def _do_update(exe_url):
         urllib.request.urlretrieve(exe_url, str(new_exe))
         bat = Path(tempfile.mktemp(suffix=".bat"))
         bat.write_text(
-            f'@echo off\ntimeout /t 2 /nobreak > nul\n'
-            f'move /y "{new_exe}" "{current_exe}"\n'
-            f'start "" "{current_exe}"\ndel "%~f0"\n',
+            f'@echo off\r\n'
+            f'timeout /t 3 /nobreak > nul\r\n'
+            f'move /y "{new_exe}" "{current_exe}"\r\n'
+            f'start "" "{current_exe}"\r\n'
+            f'del "%~f0"\r\n',
             encoding="gbk"
         )
-        DETACHED = 0x00000008
-        CREATE_NEW = 0x00000200
-        subprocess.Popen(
-            str(bat), shell=True,
-            creationflags=DETACHED | CREATE_NEW
-        )
+        os.startfile(str(bat))
         sys.exit(0)
     except Exception as e:
         messagebox.showerror("更新失敗", f"自動更新失敗，請手動下載新版本。\n\n{e}")
