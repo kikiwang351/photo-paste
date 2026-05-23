@@ -168,21 +168,6 @@ EMU_PER_DXA = 635
 # 圖片工具
 # ─────────────────────────────────────────────────────────────────────
 
-def merge_two_images(path_top, path_bot, out_path):
-    img_t = Image.open(path_top).convert("RGB")
-    img_b = Image.open(path_bot).convert("RGB")
-    w = max(img_t.width, img_b.width)
-    img_t = img_t.resize((w, img_t.height * w // img_t.width), Image.LANCZOS)
-    img_b = img_b.resize((w, img_b.height * w // img_b.width), Image.LANCZOS)
-    half_h = (img_t.height + img_b.height) // 2
-    img_t = img_t.resize((w, half_h), Image.LANCZOS)
-    img_b = img_b.resize((w, half_h), Image.LANCZOS)
-    merged = Image.new("RGB", (w, half_h * 2), (255, 255, 255))
-    merged.paste(img_t, (0, 0))
-    merged.paste(img_b, (0, half_h))
-    merged.save(out_path, "JPEG", quality=95)
-    return out_path
-
 
 def merge_images(paths, layout, out_path):
     """合併多張照片：layout = tb(上下) / lr(左右) / g4(四格2x2)"""
@@ -451,7 +436,8 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             for k,sp in enumerate(paths):
                 ext=Path(sp).suffix.lower().lstrip(".")
                 mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
-                      "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff"}.get(ext,"image/jpeg")
+                      "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff",
+                      "webp":"image/webp"}.get(ext,"image/jpeg")
                 ensure_ct(ext,mime)
                 dn=f"image_p{gidx+1:03d}_{k}.{ext}"
                 shutil.copy2(sp, media_dir/dn)
@@ -1023,6 +1009,9 @@ class App:
         self._rebuild_timer = None
 
         self._build_ui()
+
+        # 視窗關閉時清理執行緒池
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # 啟動後在背景檢查更新
         check_for_update(self.root)
@@ -2121,6 +2110,14 @@ class App:
         self._schedule_rebuild()
         self.log(f"📥 已匯入專案：{Path(phk_path).name}（{len(self.pages)} 頁）")
         messagebox.showinfo("匯入完成", f"已載入 {len(self.pages)} 頁，可繼續編輯！")
+
+    def _on_close(self):
+        """關閉視窗時清理執行緒池，避免程式卡住"""
+        try:
+            _load_pool.shutdown(wait=False)
+        except Exception:
+            pass
+        self.root.destroy()
 
     def log(self, msg):
         self.log_text.config(state="normal")
