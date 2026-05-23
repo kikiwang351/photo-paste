@@ -265,8 +265,9 @@ def make_grid_subtable(rIds, img_paths, pic_counter_start, cols, rows,
             with Image.open(p) as im: img_sizes.append(im.size)
         except: img_sizes.append((3, 4))
 
-    avail_w = CW * EMU_PER_DXA
-    avail_h = CH * EMU_PER_DXA
+    # 保留 2% 邊距，避免捨入溢出格線
+    avail_w = int(CW * EMU_PER_DXA * 0.98)
+    avail_h = int(CH * EMU_PER_DXA * 0.98)
 
     # 每張圖各自算出最大可放尺寸（各自填滿自己的格子，不統一縮小）
     each_sizes = []
@@ -330,8 +331,9 @@ def make_six_subtable(rIds, img_paths, pic_counter_start, cell_w_dxa=9074, cell_
 def calc_image_emu(img_path, cell_w_dxa, cell_h_dxa):
     with Image.open(img_path) as img:
         img_w, img_h = img.size
-    avail_w = cell_w_dxa * EMU_PER_DXA
-    avail_h = cell_h_dxa * EMU_PER_DXA
+    # 保留 2% 邊距，避免圖片剛好貼邊時因捨入溢出框線
+    avail_w = int(cell_w_dxa * EMU_PER_DXA * 0.98)
+    avail_h = int(cell_h_dxa * EMU_PER_DXA * 0.98)
     ratio = min(avail_w / img_w, avail_h / img_h)
     return int(img_w * ratio), int(img_h * ratio)
 
@@ -1327,6 +1329,7 @@ class App:
 
         # 合併照片自動加標示
         self.label_merged_var = tk.BooleanVar(value=True)
+        self.label_merged_var.trace_add("write", lambda *_: self._schedule_rebuild())
         tk.Checkbutton(right, text="合併照片自動加標示 (a / b / c…)",
                        variable=self.label_merged_var,
                        bg=C["right_bg"], fg=C["text"],
