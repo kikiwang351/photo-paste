@@ -12,6 +12,11 @@ from lxml import etree
 from PIL import Image, ImageTk, ImageDraw, ImageOps
 import tkinter as tk
 from tkinter import filedialog, messagebox
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
 
 # ─────────────────────────────────────────────────────────────────────
 import platform
@@ -432,55 +437,6 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
 
     sect_pr = body.find(f"{{{W}}}sectPr")
     for elem in list(body): body.remove(elem)
-
-    def adjust_photo_row_height(rows, photo_row_offsets, pages_in_table,
-                               usable_h, desc_text, location_text):
-        """動態計算並調整照片格高度，確保整頁塞得下"""
-        # 計算所有說明+地點列的實際高度
-        fixed_h = 0
-        for offset in photo_row_offsets:
-            desc_idx = offset + 1
-            loc_idx  = offset + 2
-            # 找對應的 page
-            slot = photo_row_offsets.index(offset)
-            page = pages_in_table[slot] if slot < len(pages_in_table) else None
-            if page:
-                d = page.get("desc"); d = d if d is not None else desc_text
-                l = page.get("loc");  l = l if l is not None else location_text
-            else:
-                d, l = desc_text, location_text
-            fixed_h += calc_row_height(d, cell_w_dxa)
-            fixed_h += calc_row_height(l, cell_w_dxa)
-
-        # 照片格平分剩餘高度
-        n_photos   = len(photo_row_offsets)
-        photo_h    = max(2000, (usable_h - fixed_h) // n_photos)
-
-        # 套用到各照片列
-        for offset in photo_row_offsets:
-            row = rows[offset]
-            trPr = row.find(f"{{{W}}}trPr")
-            if trPr is None: trPr = etree.SubElement(row, f"{{{W}}}trPr")
-            trH = trPr.find(f"{{{W}}}trHeight")
-            if trH is None: trH = etree.SubElement(trPr, f"{{{W}}}trHeight")
-            trH.set(f"{{{W}}}val", str(photo_h))
-            trH.set(f"{{{W}}}hRule", "exact")
-
-        return photo_h
-
-    # 計算頁面可用高度（從模板 sectPr 讀取）
-    sectPr   = body.find(f"{{{W}}}sectPr")
-    if sectPr is None:
-        # sectPr 已被移出 body，從原始樹找
-        sectPr = doc_root.find(f".//{{{W}}}sectPr")
-    pgSz  = sectPr.find(f"{{{W}}}pgSz")  if sectPr is not None else None
-    pgMar = sectPr.find(f"{{{W}}}pgMar") if sectPr is not None else None
-    page_h_dxa   = int(pgSz.get(f"{{{W}}}h",   "16840")) if pgSz  is not None else 16840
-    mar_top      = int(pgMar.get(f"{{{W}}}top",    "720")) if pgMar is not None else 720
-    mar_bot      = int(pgMar.get(f"{{{W}}}bottom", "720")) if pgMar is not None else 720
-    hdr_dxa      = int(pgMar.get(f"{{{W}}}header", "0"))   if pgMar is not None else 0
-    ftr_dxa      = int(pgMar.get(f"{{{W}}}footer", "0"))   if pgMar is not None else 0
-    usable_h_dxa = page_h_dxa - mar_top - mar_bot - hdr_dxa - ftr_dxa
 
     # 輔助：插入一張 page 的圖片到 photo_cell
     def insert_page_image(page, photo_cell, cell_h, gidx):
@@ -1163,8 +1119,10 @@ class App:
 
         hint_row = tk.Frame(left, bg=C["bg"])
         hint_row.pack(fill="x", padx=6, pady=2)
-        tk.Label(hint_row,
-                 text="  💡 點選縮圖（綠框）後操作；Ctrl+點選可多選再合併",
+        hint_text = "  💡 點選縮圖（綠框）後操作；Ctrl+點選可多選再合併"
+        if HAS_DND:
+            hint_text += "；📂 可直接拖照片進來"
+        tk.Label(hint_row, text=hint_text,
                  fg=C["subtext"], bg=C["bg"], font=("",8)).pack(side="left")
         self.page_count_lbl = tk.Label(hint_row, text="共 0 頁",
                  fg=C["btn_green"], bg=C["bg"], font=("",9,"bold"))
@@ -1187,6 +1145,13 @@ class App:
         self.thumb_frame.bind("<Configure>", lambda e: self.canvas.config(
             scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # 拖放支援（需要 tkinterdnd2）
+        if HAS_DND:
+            self.canvas.drop_target_register(DND_FILES)
+            self.canvas.dnd_bind("<<Drop>>", self._on_drop)
+            self.thumb_frame.drop_target_register(DND_FILES)
+            self.thumb_frame.dnd_bind("<<Drop>>", self._on_drop)
 
         # ── 右側設定 ──
         right = tk.Frame(main, bg=C["bg3"], width=275)
@@ -1326,6 +1291,41 @@ class App:
             defaultextension=".docx", filetypes=[("Word 文件","*.docx")])
         if p: self.output_var.set(p)
 
+    # ── 拖放 ──
+    def _on_drop(self, event):
+        """處理拖放檔案或資料夾到縮圖區"""
+        import re
+        raw = event.data.strip()
+        # tkinterdnd2 的路徑格式：有空格的用 {} 包起來，多個路徑空格分隔
+        paths = []
+        for match in re.finditer(r'\{([^}]+)\}|(\S+)', raw):
+            p = match.group(1) or match.group(2)
+            paths.append(p)
+
+        exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
+        img_paths = []
+        for p in paths:
+            pp = Path(p)
+            if pp.is_dir():
+                # 拖資料夾：把裡面的照片全部加進來
+                found = sorted([
+                    str(pp / f) for f in sorted(os.listdir(str(pp)))
+                    if Path(f).suffix.lower() in exts
+                ])
+                img_paths.extend(found)
+            elif pp.suffix.lower() in exts:
+                img_paths.append(str(pp))
+
+        if not img_paths:
+            self.log("⚠️ 拖放的內容找不到照片檔案"); return
+
+        self._save_history()
+        for p in img_paths:
+            self.pages.append({"type": "photo", "paths": [p], "orig_path": p,
+                                "desc": None, "loc": None, "sort_key": ""})
+        self._schedule_rebuild()
+        self.log(f"📥 拖放新增 {len(img_paths)} 張照片")
+
     # ── 頁面管理 ──
     def add_photos(self):
         """新增照片：選檔案或整個資料夾"""
@@ -1396,26 +1396,6 @@ class App:
             self.pages.append({"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""})
         self._schedule_rebuild()
         self.log(f"＋ 已新增 {len(final_paths)} 張照片（加在最後）")
-
-    def add_folder(self):
-        """匯入整個資料夾的照片（依檔名排序）"""
-        self.log("📁 開啟資料夾選擇視窗...")
-        folder = filedialog.askdirectory(title="選擇照片資料夾")
-        self.log(f"📁 選擇結果: {repr(folder)}")
-        if not folder: return
-        exts = {".jpg",".jpeg",".png",".bmp",".gif",".tiff",".webp"}
-        paths = sorted([
-            str(Path(folder)/f) for f in sorted(os.listdir(folder))
-            if Path(f).suffix.lower() in exts
-        ])
-        self.log(f"📁 找到 {len(paths)} 張照片")
-        if not paths:
-            messagebox.showinfo("📁 提示", "資料夾內找不到照片"); return
-        self._save_history()
-        for p in paths:
-            self.pages.append({"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""})
-        self._schedule_rebuild()
-        self.log(f"📁 已匯入 {len(paths)} 張照片（來自：{Path(folder).name}）")
 
     def insert_photos(self):
         """插入照片到選取頁後面（可一次多選）"""
@@ -2246,6 +2226,9 @@ class App:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    if HAS_DND:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
     App(root)
     root.mainloop()
