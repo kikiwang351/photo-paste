@@ -43,39 +43,13 @@ def check_for_update(root):
     threading.Thread(target=_check, daemon=True).start()
 
 def _prompt_update(latest, exe_url):
+    import webbrowser
     ans = messagebox.askyesno(
-        "發現新版本！",
-        f"目前版本：v{VERSION}\n最新版本：v{latest}\n\n是否立即更新？\n（下載完成後程式會自動重啟）"
+        "🌿 發現新版本！",
+        f"目前版本：v{VERSION}\n最新版本：v{latest}\n\n點「是」開啟下載頁面，下載後覆蓋舊檔案即可完成更新。"
     )
-    if not ans:
-        return
-    if not getattr(sys, 'frozen', False):
-        messagebox.showinfo("提示", "開發模式無法自動更新，請手動下載新版本。")
-        return
-    _do_update(exe_url)
-
-def _do_update(exe_url):
-    import urllib.request, subprocess
-    current_exe = Path(sys.executable)
-    new_exe = current_exe.parent / (current_exe.stem + "_new.exe")
-    try:
-        messagebox.showinfo("更新中", "正在下載新版本，請稍候...\n下載完成後程式會自動重啟。")
-        urllib.request.urlretrieve(exe_url, str(new_exe))
-        # 用 PowerShell 替換檔案並重啟，支援中文路徑
-        ps = (
-            f"Start-Sleep -Seconds 3; "
-            f"Move-Item -Force '{new_exe}' '{current_exe}'; "
-            f"Start-Process '{current_exe}'"
-        )
-        subprocess.Popen(
-            ["powershell", "-WindowStyle", "Hidden", "-Command", ps],
-            creationflags=0x00000008 | 0x00000200
-        )
-        os._exit(0)  # 強制立即結束，不經過 tkinter
-    except Exception as e:
-        messagebox.showerror("更新失敗", f"自動更新失敗，請手動下載新版本。\n\n{e}")
-        if new_exe.exists():
-            new_exe.unlink()
+    if ans:
+        webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
 
 DEFAULT_LOCATION = "地點：臺中市西屯區文心路二段588號(偵查第八隊辦公室)"
 COLS = 3  # 每排3欄，一次看更多
