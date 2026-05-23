@@ -1119,6 +1119,7 @@ class App:
         self.root.configure(bg=C["bg"])
         self.root.minsize(900, 620)
 
+        self._closed        = False
         self.pages          = []
         self.cards          = []
         self._selected      = None
@@ -1476,7 +1477,7 @@ class App:
         """插入照片到選取頁後面（可一次多選）"""
         paths = filedialog.askopenfilenames(
             title="選擇要插入的照片（可複選）",
-            filetypes=[("圖片","*.jpg *.jpeg *.png *.bmp *.gif *.tiff"),
+            filetypes=[("圖片","*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.webp"),
                        ("所有","*.*")])
         if not paths: return
 
@@ -2247,6 +2248,7 @@ class App:
 
     def _on_close(self):
         """關閉視窗時清理執行緒池，避免程式卡住"""
+        self._closed = True   # 讓背景 worker 知道視窗已關閉
         try:
             _load_pool.shutdown(wait=False)
         except Exception:
@@ -2254,11 +2256,22 @@ class App:
         self.root.destroy()
 
     def log(self, msg):
-        self.log_text.config(state="normal")
-        self.log_text.insert(tk.END, msg+"\n")
-        self.log_text.see(tk.END)
-        self.log_text.config(state="disabled")
-        self.root.update()
+        """執行緒安全的 log：統一排到主執行緒執行"""
+        if getattr(self, "_closed", False):
+            return
+        def _do():
+            if getattr(self, "_closed", False): return
+            try:
+                self.log_text.config(state="normal")
+                self.log_text.insert(tk.END, msg + "\n")
+                self.log_text.see(tk.END)
+                self.log_text.config(state="disabled")
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _do)
+        except Exception:
+            pass
 
     # ── 執行 ──
     def run(self):
