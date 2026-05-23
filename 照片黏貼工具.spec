@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='相片黏貼小幫手',
+    name='photo-helper',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

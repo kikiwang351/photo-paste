@@ -31,5 +31,5 @@ jobs:
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/相片黏貼小幫手.exe
+          files: dist/photo-helper.exe
           name: 版本 ${{ github.ref_name }}
