@@ -176,8 +176,8 @@ def stamp_label(src_path, label):
     img = Image.open(src_path).convert("RGB")
     w, h = img.size
 
-    # 字體大小：短邊的 9%，最小 18px
-    fsize = max(18, min(w, h) // 11)
+    # 字體大小：短邊的 4%，最小 14px（小但清晰）
+    fsize = max(14, min(w, h) // 25)
 
     font = None
     for fname in ["arialbd.ttf", "Arial Bold.ttf", "Arial.ttf",
@@ -190,28 +190,31 @@ def stamp_label(src_path, label):
     if font is None:
         font = ImageFont.load_default()
 
-    # 量文字實際寬高
+    # 量文字的精確邊界框（bb = left, top, right, bottom）
     tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     try:
         bb = tmp_draw.textbbox((0, 0), label, font=font)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
     except Exception:
-        tw = th = fsize
+        bb = (0, 0, fsize, fsize)
 
-    pad = max(5, fsize // 5)
+    pad = max(4, fsize // 6)
     margin = pad
 
-    # 用疊圖方式做半透明底色
+    # 矩形用 bb 的完整範圍（避免 descent 被截掉）
+    rect_x2 = margin + (bb[2] - bb[0]) + pad * 2
+    rect_y2 = margin + bb[3] + pad          # bb[3] 是從 origin 到最低點的距離
+
+    # 半透明底色
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
-    od.rectangle(
-        [margin, margin, margin + tw + pad * 2, margin + th + pad * 2],
-        fill=(20, 20, 20, 190)
-    )
+    od.rectangle([margin, margin, rect_x2, rect_y2], fill=(20, 20, 20, 200))
     img_rgba = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
+    # 文字：位置補上 bb 的 top offset，避免字浮在框內
     draw = ImageDraw.Draw(img_rgba)
-    draw.text((margin + pad, margin + pad), label, fill=(255, 255, 255), font=font)
+    tx = margin + pad - bb[0]
+    ty = margin + pad - bb[1]
+    draw.text((tx, ty), label, fill=(255, 255, 255), font=font)
 
     out = tempfile.mktemp(suffix=".jpg")
     img_rgba.save(out, "JPEG", quality=95)
@@ -922,14 +925,18 @@ class ThumbCard(tk.Frame):
                 """在格子左上角畫小標示"""
                 if not show_label or idx >= len(LABEL_CHARS): return
                 label = LABEL_CHARS[idx]
-                fsize = max(10, cell_w // 7)
-                pad   = max(3, fsize // 5)
-                # 底色半透明矩形（用簡單畫法）
-                bw = fsize + pad * 2
-                draw.rectangle([ox + 4, oy + 4, ox + 4 + bw, oy + 4 + bw],
+                pad    = 2
+                margin = 3
+                try:
+                    bb = draw.textbbox((0, 0), label)
+                except Exception:
+                    bb = (0, 0, 8, 10)
+                rect_x2 = ox + margin + (bb[2] - bb[0]) + pad * 2
+                rect_y2 = oy + margin + bb[3] + pad
+                draw.rectangle([ox + margin, oy + margin, rect_x2, rect_y2],
                                 fill=(20, 20, 20))
-                draw.text((ox + 4 + pad, oy + 4 + pad), label,
-                          fill=(255, 255, 255))
+                draw.text((ox + margin + pad - bb[0], oy + margin + pad - bb[1]),
+                          label, fill=(255, 255, 255))
 
             if len(paths) == 6:
                 # 3x2 網格預覽
