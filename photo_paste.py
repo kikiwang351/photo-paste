@@ -168,6 +168,55 @@ EMU_PER_DXA = 635
 # 圖片工具
 # ─────────────────────────────────────────────────────────────────────
 
+LABEL_CHARS = "abcdefghijklmnopqrstuvwxyz"
+
+def stamp_label(src_path, label):
+    """在圖片左上角加上 a/b/c 標示，回傳暫存 jpg 路徑"""
+    from PIL import ImageFont
+    img = Image.open(src_path).convert("RGB")
+    w, h = img.size
+
+    # 字體大小：短邊的 9%，最小 18px
+    fsize = max(18, min(w, h) // 11)
+
+    font = None
+    for fname in ["arialbd.ttf", "Arial Bold.ttf", "Arial.ttf",
+                  "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"]:
+        try:
+            font = ImageFont.truetype(fname, fsize)
+            break
+        except Exception:
+            pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    # 量文字實際寬高
+    tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    try:
+        bb = tmp_draw.textbbox((0, 0), label, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    except Exception:
+        tw = th = fsize
+
+    pad = max(5, fsize // 5)
+    margin = pad
+
+    # 用疊圖方式做半透明底色
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.rectangle(
+        [margin, margin, margin + tw + pad * 2, margin + th + pad * 2],
+        fill=(20, 20, 20, 190)
+    )
+    img_rgba = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+    draw = ImageDraw.Draw(img_rgba)
+    draw.text((margin + pad, margin + pad), label, fill=(255, 255, 255), font=font)
+
+    out = tempfile.mktemp(suffix=".jpg")
+    img_rgba.save(out, "JPEG", quality=95)
+    return out
+
 
 def merge_images(paths, layout, out_path):
     """合併多張照片：layout = tb(上下) / lr(左右) / g4(四格2x2)"""
@@ -319,7 +368,7 @@ def make_inline_image_xml(rId, emu_cx, emu_cy, pic_id):
     return etree.fromstring(xml_str)
 
 
-def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb):
+def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb, label_merged=True):
     tmp_dir  = Path(tempfile.gettempdir()) / "pp_tmp"
     work_dir = Path(tempfile.gettempdir()) / "pp_work"
     for d in (tmp_dir, work_dir):
@@ -434,6 +483,10 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             if gc*gr < len(paths): gr=(len(paths)+gc-1)//gc
             rids=[]
             for k,sp in enumerate(paths):
+                # 合併頁：依設定燒上 a/b/c 標示
+                if label_merged and k < len(LABEL_CHARS):
+                    try: sp = stamp_label(sp, LABEL_CHARS[k])
+                    except Exception: pass
                 ext=Path(sp).suffix.lower().lstrip(".")
                 mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
                       "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff",
@@ -828,6 +881,22 @@ class ThumbCard(tk.Frame):
                 r = min(mw/img.width, mh/img.height)
                 return img.resize((int(img.width*r), int(img.height*r)), Image.LANCZOS)
 
+            show_label = (hasattr(self.app, "label_merged_var") and
+                          self.app.label_merged_var.get())
+
+            def draw_cell_label(draw, ox, oy, idx, cell_w):
+                """在格子左上角畫小標示"""
+                if not show_label or idx >= len(LABEL_CHARS): return
+                label = LABEL_CHARS[idx]
+                fsize = max(10, cell_w // 7)
+                pad   = max(3, fsize // 5)
+                # 底色半透明矩形（用簡單畫法）
+                bw = fsize + pad * 2
+                draw.rectangle([ox + 4, oy + 4, ox + 4 + bw, oy + 4 + bw],
+                                fill=(20, 20, 20))
+                draw.text((ox + 4 + pad, oy + 4 + pad), label,
+                          fill=(255, 255, 255))
+
             if len(paths) == 6:
                 # 3x2 網格預覽
                 C6, R6, gap = 3, 2, 3
@@ -839,8 +908,10 @@ class ThumbCard(tk.Frame):
                     try: im = fit(get_thumb(path,cw,ch), cw, ch)
                     except: im = Image.new("RGB",(cw,ch),(200,200,200))
                     col=idx%C6; row=idx//C6
-                    combined.paste(im,(col*(cw+gap)+(cw-im.width)//2,
-                                       row*(ch+gap)+(ch-im.height)//2))
+                    px=col*(cw+gap)+(cw-im.width)//2
+                    py=row*(ch+gap)+(ch-im.height)//2
+                    combined.paste(im,(px, py))
+                    draw_cell_label(draw, col*(cw+gap), row*(ch+gap), idx, cw)
                 for ci in range(1,C6):
                     x=ci*(cw+gap)-1
                     draw.line([(x,0),(x,ch*R6+gap)],fill=(230,126,34),width=2)
@@ -858,6 +929,7 @@ class ThumbCard(tk.Frame):
                     col=idx%2; row=idx//2
                     ox=(hw-im.width)//2; oy=(hh-im.height)//2
                     combined.paste(im,(col*hw+ox,row*hh+oy))
+                    draw_cell_label(draw, col*hw, row*hh, idx, hw)
                 draw.line([(max_w//2,0),(max_w//2,max_h)],fill=(230,126,34),width=2)
                 draw.line([(0,max_h//2),(max_w,max_h//2)],fill=(230,126,34),width=2)
                 return combined
@@ -872,6 +944,8 @@ class ThumbCard(tk.Frame):
                 combined.paste(il,((hw-il.width)//2,(h-il.height)//2))
                 combined.paste(ir,(hw+(hw-ir.width)//2,(h-ir.height)//2))
                 draw=ImageDraw.Draw(combined)
+                draw_cell_label(draw, 0, 0, 0, hw)
+                draw_cell_label(draw, hw, 0, 1, hw)
                 draw.line([(hw,0),(hw,h)],fill=(230,126,34),width=2)
                 return combined
 
@@ -882,8 +956,10 @@ class ThumbCard(tk.Frame):
                 combined=Image.new("RGB",(max_w,it.height+ib.height),(255,255,255))
                 combined.paste(it,((max_w-it.width)//2,0))
                 draw=ImageDraw.Draw(combined)
+                draw_cell_label(draw, 0, 0, 0, max_w)
                 draw.line([(0,it.height),(max_w,it.height)],fill=(230,126,34),width=2)
                 combined.paste(ib,((max_w-ib.width)//2,it.height))
+                draw_cell_label(draw, 0, it.height, 1, max_w)
                 return combined
 
             else:
@@ -1203,6 +1279,16 @@ class App:
                        activebackground=C["right_bg"],
                        font=("",8), cursor="hand2").pack(
                        anchor="w", padx=14, pady=(2,0))
+
+        # 合併照片自動加標示
+        self.label_merged_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(right, text="合併照片自動加標示 (a / b / c…)",
+                       variable=self.label_merged_var,
+                       bg=C["right_bg"], fg=C["text"],
+                       selectcolor=C["entry_bg"],
+                       activebackground=C["right_bg"],
+                       font=("",8), cursor="hand2").pack(
+                       anchor="w", padx=14, pady=(0,2))
 
         sep()
         lbl("執行記錄")
@@ -2035,7 +2121,8 @@ class App:
                 process_docx(self.template_path, word_out, self.pages,
                              self.desc_var.get().strip(),
                              self.loc_var.get().strip(),
-                             self.start_var.get(), self.log)
+                             self.start_var.get(), self.log,
+                             label_merged=self.label_merged_var.get())
                 self.log(f"📦 專案已儲存：{phk_path}")
                 def done():
                     messagebox.showinfo("💾 儲存完成",
@@ -2152,7 +2239,8 @@ class App:
                 process_docx(self.template_path, output, self.pages,
                              self.desc_var.get().strip(),
                              self.loc_var.get().strip(),
-                             self.start_var.get(), self.log)
+                             self.start_var.get(), self.log,
+                             label_merged=self.label_merged_var.get())
                 def on_complete():
                     messagebox.showinfo("🌿 完成", f"輸出完成！\n\n{output}")
                     if self.open_after_var.get():
