@@ -432,28 +432,67 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             el.set("Extension", ext_lower); el.set("ContentType", mime)
             registered_exts.add(ext_lower)
 
-    def set_cell_text(cell, text, max_sz=28, min_sz=14):
-        """清空格子內容並寫入文字，自動縮小字體避免跑版"""
-        # 清除所有現有段落
+    def set_cell_text(cell, text, min_sz=14):
+        """清空格子內容並寫入文字，完整保留模板格式，字數多時自動縮小字體"""
+        # ── 先讀取模板格子裡現有的段落格式和字元格式 ──
+        tmpl_pPr = None
+        tmpl_rPr = None
+        for p in cell.findall(f"{{{W}}}p"):
+            if tmpl_pPr is None:
+                tmpl_pPr = p.find(f"{{{W}}}pPr")
+            for r in p.findall(f"{{{W}}}r"):
+                rpr = r.find(f"{{{W}}}rPr")
+                if rpr is not None:
+                    tmpl_rPr = copy.deepcopy(rpr)
+                    break
+            if tmpl_rPr is not None:
+                break
+
+        # 讀出模板的字體大小（w:sz 單位是 half-point）
+        max_sz = 28  # 預設 14pt
+        if tmpl_rPr is not None:
+            sz_el = tmpl_rPr.find(f"{{{W}}}sz")
+            if sz_el is not None:
+                try: max_sz = int(sz_el.get(f"{{{W}}}val", "28"))
+                except: pass
+
+        # ── 清除所有現有段落，重新建立 ──
         for p in cell.findall(f"{{{W}}}p"): cell.remove(p)
-        # 建立新段落
-        p   = etree.SubElement(cell, f"{{{W}}}p")
-        pPr = etree.SubElement(p, f"{{{W}}}pPr")
-        sp  = etree.SubElement(pPr, f"{{{W}}}spacing")
+        p = etree.SubElement(cell, f"{{{W}}}p")
+
+        # 段落格式：沿用模板，補上行距歸零
+        if tmpl_pPr is not None:
+            new_pPr = copy.deepcopy(tmpl_pPr)
+        else:
+            new_pPr = etree.SubElement(p, f"{{{W}}}pPr")
+        sp = new_pPr.find(f"{{{W}}}spacing")
+        if sp is None:
+            sp = etree.SubElement(new_pPr, f"{{{W}}}spacing")
         sp.set(f"{{{W}}}before", "0"); sp.set(f"{{{W}}}after", "0")
+        p.append(new_pPr)
+
         r_e = etree.SubElement(p, f"{{{W}}}r")
-        rPr = etree.SubElement(r_e, f"{{{W}}}rPr")
-        rFonts = etree.SubElement(rPr, f"{{{W}}}rFonts")
-        rFonts.set(f"{{{W}}}eastAsia", "標楷體")
-        rFonts.set(f"{{{W}}}hint",     "eastAsia")
-        # 字體大小：文字超過20字就縮小
+
+        # 字元格式：完整沿用模板，只在字數多時縮小字體
+        if tmpl_rPr is not None:
+            new_rPr = copy.deepcopy(tmpl_rPr)
+        else:
+            # fallback：無模板格式則用預設標楷體
+            new_rPr = etree.Element(f"{{{W}}}rPr")
+            rFonts = etree.SubElement(new_rPr, f"{{{W}}}rFonts")
+            rFonts.set(f"{{{W}}}eastAsia", "標楷體")
+            rFonts.set(f"{{{W}}}hint", "eastAsia")
+
+        # 字數超過 20 字就縮小字體
         sz_val = max_sz
         if text and len(text) > 20:
             sz_val = max(min_sz, max_sz - (len(text) - 20) // 5 * 2)
-        sz = etree.SubElement(rPr, f"{{{W}}}sz")
-        sz.set(f"{{{W}}}val", str(sz_val))
-        sz2 = etree.SubElement(rPr, f"{{{W}}}szCs")
-        sz2.set(f"{{{W}}}val", str(sz_val))
+        for tag in (f"{{{W}}}sz", f"{{{W}}}szCs"):
+            el = new_rPr.find(tag)
+            if el is None: el = etree.SubElement(new_rPr, tag)
+            el.set(f"{{{W}}}val", str(sz_val))
+
+        r_e.append(new_rPr)
         t_e = etree.SubElement(r_e, f"{{{W}}}t")
         if text and (text[0] == ' ' or text[-1] == ' '):
             t_e.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
