@@ -12,11 +12,6 @@ from lxml import etree
 from PIL import Image, ImageTk, ImageDraw, ImageOps
 import tkinter as tk
 from tkinter import filedialog, messagebox
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-    HAS_DND = True
-except ImportError:
-    HAS_DND = False
 
 # ─────────────────────────────────────────────────────────────────────
 import platform
@@ -1119,10 +1114,8 @@ class App:
 
         hint_row = tk.Frame(left, bg=C["bg"])
         hint_row.pack(fill="x", padx=6, pady=2)
-        hint_text = "  💡 點選縮圖（綠框）後操作；Ctrl+點選可多選再合併"
-        if HAS_DND:
-            hint_text += "；📂 可直接拖照片進來"
-        tk.Label(hint_row, text=hint_text,
+        tk.Label(hint_row,
+                 text="  💡 點選縮圖（綠框）後操作；Ctrl+點選可多選再合併",
                  fg=C["subtext"], bg=C["bg"], font=("",8)).pack(side="left")
         self.page_count_lbl = tk.Label(hint_row, text="共 0 頁",
                  fg=C["btn_green"], bg=C["bg"], font=("",9,"bold"))
@@ -1146,12 +1139,6 @@ class App:
             scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
-        # 拖放支援（需要 tkinterdnd2）
-        if HAS_DND:
-            self.canvas.drop_target_register(DND_FILES)
-            self.canvas.dnd_bind("<<Drop>>", self._on_drop)
-            self.thumb_frame.drop_target_register(DND_FILES)
-            self.thumb_frame.dnd_bind("<<Drop>>", self._on_drop)
 
         # ── 右側設定 ──
         right = tk.Frame(main, bg=C["bg3"], width=275)
@@ -1290,41 +1277,6 @@ class App:
         p = filedialog.asksaveasfilename(title="輸出另存為",
             defaultextension=".docx", filetypes=[("Word 文件","*.docx")])
         if p: self.output_var.set(p)
-
-    # ── 拖放 ──
-    def _on_drop(self, event):
-        """處理拖放檔案或資料夾到縮圖區"""
-        import re
-        raw = event.data.strip()
-        # tkinterdnd2 的路徑格式：有空格的用 {} 包起來，多個路徑空格分隔
-        paths = []
-        for match in re.finditer(r'\{([^}]+)\}|(\S+)', raw):
-            p = match.group(1) or match.group(2)
-            paths.append(p)
-
-        exts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
-        img_paths = []
-        for p in paths:
-            pp = Path(p)
-            if pp.is_dir():
-                # 拖資料夾：把裡面的照片全部加進來
-                found = sorted([
-                    str(pp / f) for f in sorted(os.listdir(str(pp)))
-                    if Path(f).suffix.lower() in exts
-                ])
-                img_paths.extend(found)
-            elif pp.suffix.lower() in exts:
-                img_paths.append(str(pp))
-
-        if not img_paths:
-            self.log("⚠️ 拖放的內容找不到照片檔案"); return
-
-        self._save_history()
-        for p in img_paths:
-            self.pages.append({"type": "photo", "paths": [p], "orig_path": p,
-                                "desc": None, "loc": None, "sort_key": ""})
-        self._schedule_rebuild()
-        self.log(f"📥 拖放新增 {len(img_paths)} 張照片")
 
     # ── 頁面管理 ──
     def add_photos(self):
@@ -2226,9 +2178,6 @@ class App:
 
 
 if __name__ == "__main__":
-    if HAS_DND:
-        root = TkinterDnD.Tk()
-    else:
-        root = tk.Tk()
+    root = tk.Tk()
     App(root)
     root.mainloop()
