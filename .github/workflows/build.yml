@@ -29,9 +29,9 @@ jobs:
         run: pyinstaller 照片黏貼工具.spec
 
       - name: Upload Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/photo-helper.exe
-          name: 版本 ${{ github.ref_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} dist/photo-helper.exe `
+            --title "版本 ${{ github.ref_name }}" `
+            --notes "自動打包版本 ${{ github.ref_name }}"
