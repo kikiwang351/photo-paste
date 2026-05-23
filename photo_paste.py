@@ -265,16 +265,11 @@ def make_grid_subtable(rIds, img_paths, pic_counter_start, cols, rows,
     avail_w = CW * EMU_PER_DXA
     avail_h = CH * EMU_PER_DXA
 
-    # 每張圖各自算出最大可放尺寸
+    # 每張圖各自算出最大可放尺寸（各自填滿自己的格子，不統一縮小）
     each_sizes = []
     for iw, ih in img_sizes:
         ratio = min(avail_w / iw, avail_h / ih)
         each_sizes.append((int(iw * ratio), int(ih * ratio)))
-
-    # 取最小寬度和最小高度作為統一尺寸（確保視覺上大小一致）
-    unified_w = min(s[0] for s in each_sizes) if each_sizes else int(avail_w)
-    unified_h = min(s[1] for s in each_sizes) if each_sizes else int(avail_h)
-    unified_sizes = [(unified_w, unified_h)] * len(each_sizes)
 
     tbl = etree.Element(f"{{{W}}}tbl")
     tblPr = etree.SubElement(tbl, f"{{{W}}}tblPr")
@@ -314,7 +309,7 @@ def make_grid_subtable(rIds, img_paths, pic_counter_start, cols, rows,
             sp = etree.SubElement(pPr, f"{{{W}}}spacing")
             sp.set(f"{{{W}}}before", "0"); sp.set(f"{{{W}}}after", "0")
             if idx < len(rIds):
-                emu_w, emu_h = unified_sizes[idx]
+                emu_w, emu_h = each_sizes[idx] if idx < len(each_sizes) else (int(avail_w), int(avail_h))
                 r_elem = etree.SubElement(p, f"{{{W}}}r")
                 r_elem.append(make_inline_image_xml(rIds[idx], emu_w, emu_h, pic_counter))
                 pic_counter += 1
