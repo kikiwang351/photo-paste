@@ -17,6 +17,64 @@ from tkinter import filedialog, messagebox
 import platform
 IS_MAC = platform.system() == 'Darwin'
 
+VERSION = "1.1"
+GITHUB_REPO = "kikiwang351/photo-paste"
+
+def check_for_update(root):
+    """背景檢查是否有新版本，有的話跳出提示"""
+    import urllib.request, json
+
+    def _check():
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "photo-paste-updater"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read())
+            latest = data.get("tag_name", "").lstrip("v")
+            if not latest or latest <= VERSION:
+                return
+            exe_url = next((a["browser_download_url"] for a in data.get("assets", [])
+                            if a["name"].endswith(".exe")), None)
+            if exe_url:
+                root.after(0, lambda: _prompt_update(latest, exe_url))
+        except Exception:
+            pass  # 網路失敗就靜默跳過，不影響正常使用
+
+    threading.Thread(target=_check, daemon=True).start()
+
+def _prompt_update(latest, exe_url):
+    ans = messagebox.askyesno(
+        "發現新版本！",
+        f"目前版本：v{VERSION}\n最新版本：v{latest}\n\n是否立即更新？\n（下載完成後程式會自動重啟）"
+    )
+    if not ans:
+        return
+    if not getattr(sys, 'frozen', False):
+        messagebox.showinfo("提示", "開發模式無法自動更新，請手動下載新版本。")
+        return
+    _do_update(exe_url)
+
+def _do_update(exe_url):
+    import urllib.request, subprocess
+    current_exe = Path(sys.executable)
+    new_exe = current_exe.with_suffix(".new")
+    try:
+        messagebox.showinfo("更新中", "正在下載新版本，請稍候...\n下載完成後程式會自動重啟。")
+        urllib.request.urlretrieve(exe_url, str(new_exe))
+        bat = Path(tempfile.mktemp(suffix=".bat"))
+        bat.write_text(
+            f'@echo off\ntimeout /t 2 /nobreak > nul\n'
+            f'move /y "{new_exe}" "{current_exe}"\n'
+            f'start "" "{current_exe}"\ndel "%~f0"\n',
+            encoding="gbk"
+        )
+        subprocess.Popen(str(bat), shell=True)
+        sys.exit(0)
+    except Exception as e:
+        messagebox.showerror("更新失敗", f"自動更新失敗，請手動下載新版本。\n\n{e}")
+        if new_exe.exists():
+            new_exe.unlink()
+
 DEFAULT_LOCATION = "地點：臺中市西屯區文心路二段588號(偵查第八隊辦公室)"
 COLS = 3  # 每排3欄，一次看更多
 
@@ -1038,6 +1096,9 @@ class App:
         self._rebuild_timer = None
 
         self._build_ui()
+
+        # 啟動後在背景檢查更新
+        check_for_update(self.root)
 
         # 視窗大小改變時重建縮圖
         self.root.bind("<Configure>", self._on_window_resize)
