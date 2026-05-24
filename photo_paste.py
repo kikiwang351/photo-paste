@@ -1240,7 +1240,7 @@ class App:
         tb("▶  開始製作",  self.run,            "#2383e2")
         tb("💾  儲存",     self.save_project,   "#2f2f2f")
         tb("📥  匯入",     self.load_project,   "#2f2f2f")
-        tb("📂  模板",     self.pick_template,  "#2f2f2f")
+        tb("📂  模板",     self.open_template_picker, "#2f2f2f")
 
         # 分隔線
         tk.Frame(top, bg="#333333", width=1).pack(side="right", fill="y", pady=8, padx=4)
@@ -1486,24 +1486,8 @@ class App:
 
     # ── 模板 / 輸出 ──
     def _auto_load_template(self):
-        """啟動時自動載入上次使用的模板，或顯示內建模板選擇器"""
-        cfg = load_config()
-        tmpl_cfg = cfg.get("template", "")
+        """啟動時顯示模板選擇器"""
         bundled = get_bundled_templates()
-
-        # 嘗試載入上次設定的模板
-        if tmpl_cfg:
-            if tmpl_cfg.startswith("bundled:"):
-                name = tmpl_cfg[len("bundled:"):]
-                for bname, bpath in bundled:
-                    if bname == name and bpath.exists():
-                        self._set_template(str(bpath), bname, f"bundled:{bname}")
-                        return
-            elif Path(tmpl_cfg).exists():
-                self._set_template(tmpl_cfg, Path(tmpl_cfg).name, tmpl_cfg)
-                return
-
-        # 沒有記錄或找不到 → 顯示內建選擇器（若有內建模板）
         if bundled:
             self._show_template_picker(bundled)
 
@@ -1513,35 +1497,47 @@ class App:
         self.template_lbl.config(text=f"📄 {display_name}", fg="white")
         save_config({"template": config_key})
 
+    def open_template_picker(self):
+        """頂列「模板」按鈕 → 顯示選擇器"""
+        bundled = get_bundled_templates()
+        self._show_template_picker(bundled)
+
     def _show_template_picker(self, bundled):
-        """顯示內建模板選擇視窗"""
+        """顯示模板選擇視窗（啟動時 & 按模板按鈕時共用）"""
         dlg = tk.Toplevel(self.root)
         dlg.title("選擇模板")
         dlg.configure(bg=C["bg"])
         dlg.resizable(False, False)
         dlg.grab_set()
 
-        tk.Label(dlg, text="請選擇使用的模板",
+        tk.Label(dlg, text="選擇模板",
                  fg=C["text"], bg=C["bg"],
-                 font=("", 12, "bold")).pack(pady=(20, 6), padx=24)
-        tk.Label(dlg, text="之後可在頂列「📂 模板」更換",
+                 font=("", 12, "bold")).pack(pady=(20, 4), padx=24)
+
+        # 顯示目前使用的模板
+        cur = Path(self.template_path).name if self.template_path else "尚未選擇"
+        tk.Label(dlg, text=f"目前：{cur}",
                  fg=C["subtext"], bg=C["bg"],
                  font=("", 8)).pack(pady=(0, 12))
 
         btn_frame = tk.Frame(dlg, bg=C["bg"])
         btn_frame.pack(pady=4, padx=24)
 
-        labels = {"照片黏貼A4大圖範本.docx":    "A4 大圖\n（每頁1張）",
-                  "照片黏貼一頁雙圖範本.docx":   "一頁雙圖\n（每頁2張）"}
+        labels = {"照片黏貼A4大圖範本.docx":  "A4 大圖\n（每頁 1 張）",
+                  "照片黏貼一頁雙圖範本.docx": "一頁雙圖\n（每頁 2 張）"}
 
         for bname, bpath in bundled:
             display = labels.get(bname, bname.replace(".docx", ""))
+            # 目前使用中的模板加底色區分
+            is_current = self.template_path == str(bpath)
+            bg_color = C["btn_blue"] if is_current else C["btn_green"]
+            mark = " ✓" if is_current else ""
             def pick(p=str(bpath), n=bname):
                 self._set_template(p, n, f"bundled:{n}")
                 dlg.destroy()
-            tk.Button(btn_frame, text=f"📄 {display}",
+            tk.Button(btn_frame, text=f"📄 {display}{mark}",
                       command=pick,
-                      bg=C["btn_green"], fg="white", relief="flat",
+                      bg=bg_color, fg="white", relief="flat",
                       padx=20, pady=14, font=("", 10, "bold"),
                       cursor="hand2", bd=0, wraplength=160,
                       justify="center").pack(side="left", padx=8)
@@ -1549,7 +1545,7 @@ class App:
         def pick_other():
             dlg.destroy()
             self.pick_template()
-        tk.Button(dlg, text="📂 選擇其他模板…",
+        tk.Button(dlg, text="📂 選擇其他檔案…",
                   command=pick_other,
                   bg=C["btn_gray"], fg="white", relief="flat",
                   padx=12, pady=6, font=("", 9),
