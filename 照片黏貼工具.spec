@@ -5,7 +5,10 @@ a = Analysis(
     ['photo_paste.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('照片黏貼A4大圖範本.docx', '.'),
+        ('照片黏貼一頁雙圖範本.docx', '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

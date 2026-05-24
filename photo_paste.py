@@ -4,7 +4,7 @@
 By Kiki
 """
 
-import os, sys, shutil, zipfile, copy, re, threading, tempfile
+import os, sys, shutil, zipfile, copy, re, threading, tempfile, json
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -50,6 +50,44 @@ def _prompt_update(latest, exe_url):
     )
     if ans:
         webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
+
+# ── 全域 MIME 對應表（統一一份，不重複定義）──
+MIME_TYPES = {
+    "jpg":  "image/jpeg", "jpeg": "image/jpeg",
+    "png":  "image/png",  "bmp":  "image/bmp",
+    "gif":  "image/gif",  "tiff": "image/tiff",
+    "webp": "image/webp",
+}
+
+# ── 設定檔（記住地點、上次使用的模板）──
+CONFIG_PATH = Path.home() / ".photo_paste_config.json"
+
+def load_config():
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_config(data):
+    try:
+        existing = load_config()
+        existing.update(data)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+# ── 內建模板路徑 ──
+BUNDLED_TEMPLATES = ["照片黏貼A4大圖範本.docx", "照片黏貼一頁雙圖範本.docx"]
+
+def get_bundled_templates():
+    """取得內建模板清單（PyInstaller bundle 或開發環境皆可用）"""
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent
+    return [(n, base / n) for n in BUNDLED_TEMPLATES if (base / n).exists()]
 
 DEFAULT_LOCATION = "地點：臺中市西屯區文心路二段588號(偵查第八隊辦公室)"
 COLS = 3  # 每排3欄，一次看更多
@@ -170,15 +208,14 @@ EMU_PER_DXA = 635
 
 LABEL_CHARS = "abcdefghijklmnopqrstuvwxyz"
 
-def stamp_label(src_path, label):
-    """在圖片左上角加上 a/b/c 標示，回傳暫存 jpg 路徑"""
+# ── 字型快取：避免每次 stamp_label 都重新搜尋字型檔 ──
+_font_cache: dict = {}
+
+def _get_label_font(fsize):
+    """快取字型物件，相同 size 只載入一次"""
     from PIL import ImageFont
-    img = Image.open(src_path).convert("RGB")
-    w, h = img.size
-
-    # 字體大小：短邊的 4%，最小 14px（小但清晰）
-    fsize = max(14, min(w, h) // 25)
-
+    if fsize in _font_cache:
+        return _font_cache[fsize]
     font = None
     for fname in ["arialbd.ttf", "Arial Bold.ttf", "Arial.ttf",
                   "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"]:
@@ -189,6 +226,17 @@ def stamp_label(src_path, label):
             pass
     if font is None:
         font = ImageFont.load_default()
+    _font_cache[fsize] = font
+    return font
+
+def stamp_label(src_path, label):
+    """在圖片左上角加上 a/b/c 標示，回傳暫存 jpg 路徑"""
+    img = Image.open(src_path).convert("RGB")
+    w, h = img.size
+
+    # 字體大小：短邊的 4%，最小 14px（小但清晰）
+    fsize = max(14, min(w, h) // 25)
+    font = _get_label_font(fsize)
 
     # 量文字的精確邊界框（bb = left, top, right, bottom）
     tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
@@ -223,7 +271,12 @@ def stamp_label(src_path, label):
 
 def merge_images(paths, layout, out_path):
     """合併多張照片：layout = tb(上下) / lr(左右) / g4(四格2x2)"""
-    imgs = [Image.open(p).convert("RGB") for p in paths]
+    imgs = []
+    for p in paths:
+        try:
+            imgs.append(Image.open(p).convert("RGB"))
+        except Exception:
+            imgs.append(Image.new("RGB", (800, 600), (220, 220, 220)))  # 灰色佔位
 
     if layout == "lr" and len(imgs) >= 2:
         h = max(i.height for i in imgs[:2])
@@ -329,13 +382,24 @@ def make_six_subtable(rIds, img_paths, pic_counter_start, cell_w_dxa=9074, cell_
 # ─────────────────────────────────────────────────────────────────────
 
 def calc_image_emu(img_path, cell_w_dxa, cell_h_dxa):
-    with Image.open(img_path) as img:
-        img_w, img_h = img.size
+    try:
+        with Image.open(img_path) as img:
+            img_w, img_h = img.size
+    except Exception:
+        img_w, img_h = 800, 600  # 圖片損壞時用預設比例
     # 保留 2% 邊距，避免圖片剛好貼邊時因捨入溢出框線
     avail_w = int(cell_w_dxa * EMU_PER_DXA * 0.98)
     avail_h = int(cell_h_dxa * EMU_PER_DXA * 0.98)
-    ratio = min(avail_w / img_w, avail_h / img_h)
+    ratio = min(avail_w / max(img_w, 1), avail_h / max(img_h, 1))
     return int(img_w * ratio), int(img_h * ratio)
+
+
+def clear_cell_content(cell):
+    """清除格子內所有段落與子表格（避免重複程式碼）"""
+    for el in list(cell):
+        tn = el.tag.split("}")[1] if "}" in el.tag else el.tag
+        if tn in ("p", "tbl"):
+            cell.remove(el)
 
 
 def make_inline_image_xml(rId, emu_cx, emu_cy, pic_id):
@@ -411,6 +475,12 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             photo_rows.append((ri, h))
 
     photos_per_page = len(photo_rows)  # 1 或 2
+
+    if not photo_rows:
+        raise RuntimeError(
+            "模板格式不正確：找不到照片格。\n"
+            "請確認模板中有「單欄、高度大於 1000 的列」作為照片放置區。"
+        )
 
     # 取第一張照片格的寬高
     first_photo_row = all_rows[photo_rows[0][0]]  # photo_rows[0] = (row_idx, height)
@@ -510,9 +580,7 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
         nonlocal pic_counter, next_rid_num
         paths  = page.get("paths", [])
         layout = page.get("layout", "tb")
-        for elem in list(photo_cell):
-            tn = elem.tag.split("}")[1] if "}" in elem.tag else elem.tag
-            if tn in ("p","tbl"): photo_cell.remove(elem)
+        clear_cell_content(photo_cell)
         if not paths:
             etree.SubElement(photo_cell, f"{{{W}}}p"); return
         if len(paths) >= 2:
@@ -526,11 +594,10 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
                     try:
                         sp = stamp_label(sp, LABEL_CHARS[k])
                         _stamp_tmps.append(sp)
-                    except Exception: pass
+                    except Exception as e:
+                        log_cb(f"[警告] 標示燒印失敗：{e}")
                 ext=Path(sp).suffix.lower().lstrip(".")
-                mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
-                      "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff",
-                      "webp":"image/webp"}.get(ext,"image/jpeg")
+                mime=MIME_TYPES.get(ext, "image/jpeg")
                 ensure_ct(ext,mime)
                 dn=f"image_p{gidx+1:03d}_{k}.{ext}"
                 shutil.copy2(sp, media_dir/dn)
@@ -544,9 +611,7 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
         else:
             ap=paths[0]
             ext=Path(ap).suffix.lower().lstrip(".")
-            mime={"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
-                  "bmp":"image/bmp","gif":"image/gif","tiff":"image/tiff",
-                  "webp":"image/webp"}.get(ext,"image/jpeg")
+            mime=MIME_TYPES.get(ext, "image/jpeg")
             ensure_ct(ext,mime)
             dn=f"image_p{gidx+1:03d}.{ext}"
             shutil.copy2(ap, media_dir/dn)
@@ -589,16 +654,12 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
 
         if page.get("type") == "blank":
             pc = rows[photo_rows[0][0]].find(f"{{{W}}}tc")
-            for el in list(pc):
-                tn=el.tag.split("}")[1] if "}" in el.tag else el.tag
-                if tn in ("p","tbl"): pc.remove(el)
+            clear_cell_content(pc)
             etree.SubElement(pc, f"{{{W}}}p")
             fill_desc_loc(rows, photo_rows[0][0], page, photo_num)
             if photos_per_page == 2:
                 pc2 = rows[photo_rows[1][0]].find(f"{{{W}}}tc")
-                for el in list(pc2):
-                    tn=el.tag.split("}")[1] if "}" in el.tag else el.tag
-                    if tn in ("p","tbl"): pc2.remove(el)
+                clear_cell_content(pc2)
                 etree.SubElement(pc2, f"{{{W}}}p")
                 fill_desc_loc(rows, photo_rows[1][0], page, photo_num+1)
             log_cb(f"⬜ [{bar}]{pct:3d}%  第{i+1}/{total_pages}頁  空白頁  編號{photo_num:02d}")
@@ -616,9 +677,7 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
                 log_cb(f"✅ [{bar}]{pct:3d}%  第{i+1}-{i+2}/{total_pages}頁  編號{photo_num:02d}-{photo_num+1:02d}")
                 i += 2
             else:
-                for el in list(pc2):
-                    tn=el.tag.split("}")[1] if "}" in el.tag else el.tag
-                    if tn in ("p","tbl"): pc2.remove(el)
+                clear_cell_content(pc2)
                 etree.SubElement(pc2, f"{{{W}}}p")
                 log_cb(f"✅ [{bar}]{pct:3d}%  第{i+1}/{total_pages}頁  編號{photo_num:02d}")
                 i += 1
@@ -722,6 +781,7 @@ class CropWindow(tk.Toplevel):
         btn("➕ 新增為新頁", lambda: self._do_confirm("new_page"), C["btn_blue"])
         btn("↺ 重選框",     self._reset,                          C["btn_brown"])
         btn("✕ 取消",       self.destroy,                         C["btn_gray"])
+        self.bind("<Escape>", lambda e: self.destroy())
         self.grab_set()
         self._redraw()
 
@@ -788,8 +848,8 @@ class CropWindow(tk.Toplevel):
             y1=int(min(self._start[1],self._end[1])/self.scale)
             x2=int(max(self._start[0],self._end[0])/self.scale)
             y2=int(max(self._start[1],self._end[1])/self.scale)
-            if x2-x1<5 or y2-y1<5:
-                messagebox.showwarning("提示","選取區域太小",parent=self); return
+            if x2-x1<20 or y2-y1<20:
+                messagebox.showwarning("提示","選取區域太小（最小 20×20 像素）",parent=self); return
             tmp = tempfile.mktemp(suffix=".jpg")
             self._rotated.crop((x1,y1,x2,y2)).save(tmp,"JPEG",quality=95)
         self.callback(tmp, mode)
@@ -1077,10 +1137,9 @@ class ThumbCard(tk.Frame):
 
     def _on_desc_change(self, *args):
         if self._syncing: return
-        val = self.desc_var.get()
-        # 如果跟 app 預設說明一樣就設為 None（跟著同步），否則標記為自訂
+        val = self.desc_var.get().strip()
         default = self.app.desc_var.get().strip()
-        self.page["desc"] = None if val == default else val
+        self.page["desc"] = None if val == default else self.desc_var.get()
 
     def sync_desc(self, default_text):
         """從右側說明同步（只有 desc==None 的才同步）"""
@@ -1091,9 +1150,9 @@ class ThumbCard(tk.Frame):
 
     def _on_loc_change(self, *args):
         if self._syncing: return
-        val = self.loc_var2.get()
+        val = self.loc_var2.get().strip()
         default = self.app.loc_var.get().strip() if hasattr(self.app, "loc_var") else ""
-        self.page["loc"] = None if val == default else val
+        self.page["loc"] = None if val == default else self.loc_var2.get()
 
     def sync_loc(self, default_text):
         """從右側地點同步（只有 loc==None 的才同步）"""
@@ -1144,6 +1203,9 @@ class App:
 
         # 啟動後在背景檢查更新
         check_for_update(self.root)
+
+        # 啟動後自動載入內建模板（100ms 後，確保 UI 已繪製完成）
+        self.root.after(100, self._auto_load_template)
 
         # 視窗大小改變時重建縮圖
         self.root.bind("<Configure>", self._on_window_resize)
@@ -1213,7 +1275,7 @@ class App:
         bb("← 左移",   self.move_left,       "#37352f")
         bb("→ 右移",   self.move_right,      "#37352f")
         bb("⇅ 顛倒",   self.reverse_order,   "#37352f")
-        bb("🔢 排序",   self.sort_by_key,     "#37352f")
+        bb("🔄 重新整理", self.sort_by_key,    "#37352f")
         vsep(toolbar)
         # 群組③：合併
         bb("🔗 合併",   self.merge_selected,  "#9065b0")
@@ -1302,14 +1364,18 @@ class App:
         self.desc_var = tk.StringVar(value="說明文字請填寫。")
         self.desc_var.trace_add("write", self._on_default_desc_change)
         ent(self.desc_var)
-        tk.Label(right, text="💡 各頁可在縮圖下方單獨修改",
-                 fg=C["subtext"], bg=C["right_bg"],
-                 font=("",7)).pack(anchor="w", padx=16, pady=(0,2))
+        self.sync_desc_lbl = tk.Label(right, text="",
+                 fg=C["subtext"], bg=C["bg3"], font=("",7))
+        self.sync_desc_lbl.pack(anchor="w", padx=16, pady=(0,2))
 
         lbl("地點")
-        self.loc_var = tk.StringVar(value=DEFAULT_LOCATION)
+        _saved_loc = load_config().get("last_location", DEFAULT_LOCATION)
+        self.loc_var = tk.StringVar(value=_saved_loc)
         self.loc_var.trace_add("write", self._on_default_loc_change)
         ent(self.loc_var)
+        self.sync_loc_lbl = tk.Label(right, text="",
+                 fg=C["subtext"], bg=C["bg3"], font=("",7))
+        self.sync_loc_lbl.pack(anchor="w", padx=16, pady=(0,2))
 
         sep()
         lbl("起始照片編號")
@@ -1371,12 +1437,21 @@ class App:
     def _on_default_desc_change(self, *args):
         """右側說明改變時，同步所有未自訂的縮圖說明欄"""
         default = self.desc_var.get().strip()
+        count = sum(1 for c in self.cards if c.page.get("desc") is None)
+        if hasattr(self, "sync_desc_lbl"):
+            self.sync_desc_lbl.config(
+                text=f"將同步至 {count} 頁" if count > 0 else "")
         for card in self.cards:
             card.sync_desc(default)
 
     def _on_default_loc_change(self, *args):
-        """右側地點改變時，同步所有未自訂的縮圖地點欄"""
+        """右側地點改變時，同步所有未自訂的縮圖地點欄，並記憶設定"""
         default = self.loc_var.get().strip()
+        save_config({"last_location": default})
+        count = sum(1 for c in self.cards if c.page.get("loc") is None)
+        if hasattr(self, "sync_loc_lbl"):
+            self.sync_loc_lbl.config(
+                text=f"將同步至 {count} 頁" if count > 0 else "")
         for card in self.cards:
             if hasattr(card, "sync_loc"):
                 card.sync_loc(default)
@@ -1404,12 +1479,81 @@ class App:
         self._resize_after = self.root.after(300, self._schedule_rebuild)
 
     # ── 模板 / 輸出 ──
+    def _auto_load_template(self):
+        """啟動時自動載入上次使用的模板，或顯示內建模板選擇器"""
+        cfg = load_config()
+        tmpl_cfg = cfg.get("template", "")
+        bundled = get_bundled_templates()
+
+        # 嘗試載入上次設定的模板
+        if tmpl_cfg:
+            if tmpl_cfg.startswith("bundled:"):
+                name = tmpl_cfg[len("bundled:"):]
+                for bname, bpath in bundled:
+                    if bname == name and bpath.exists():
+                        self._set_template(str(bpath), bname, f"bundled:{bname}")
+                        return
+            elif Path(tmpl_cfg).exists():
+                self._set_template(tmpl_cfg, Path(tmpl_cfg).name, tmpl_cfg)
+                return
+
+        # 沒有記錄或找不到 → 顯示內建選擇器（若有內建模板）
+        if bundled:
+            self._show_template_picker(bundled)
+
+    def _set_template(self, path, display_name, config_key):
+        """設定模板路徑並記憶"""
+        self.template_path = path
+        self.template_lbl.config(text=f"📄 {display_name}", fg="white")
+        save_config({"template": config_key})
+
+    def _show_template_picker(self, bundled):
+        """顯示內建模板選擇視窗"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("選擇模板")
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="請選擇使用的模板",
+                 fg=C["text"], bg=C["bg"],
+                 font=("", 12, "bold")).pack(pady=(20, 6), padx=24)
+        tk.Label(dlg, text="之後可在頂列「📂 模板」更換",
+                 fg=C["subtext"], bg=C["bg"],
+                 font=("", 8)).pack(pady=(0, 12))
+
+        btn_frame = tk.Frame(dlg, bg=C["bg"])
+        btn_frame.pack(pady=4, padx=24)
+
+        labels = {"照片黏貼A4大圖範本.docx":    "A4 大圖\n（每頁1張）",
+                  "照片黏貼一頁雙圖範本.docx":   "一頁雙圖\n（每頁2張）"}
+
+        for bname, bpath in bundled:
+            display = labels.get(bname, bname.replace(".docx", ""))
+            def pick(p=str(bpath), n=bname):
+                self._set_template(p, n, f"bundled:{n}")
+                dlg.destroy()
+            tk.Button(btn_frame, text=f"📄 {display}",
+                      command=pick,
+                      bg=C["btn_green"], fg="white", relief="flat",
+                      padx=20, pady=14, font=("", 10, "bold"),
+                      cursor="hand2", bd=0, wraplength=160,
+                      justify="center").pack(side="left", padx=8)
+
+        def pick_other():
+            dlg.destroy()
+            self.pick_template()
+        tk.Button(dlg, text="📂 選擇其他模板…",
+                  command=pick_other,
+                  bg=C["btn_gray"], fg="white", relief="flat",
+                  padx=12, pady=6, font=("", 9),
+                  cursor="hand2", bd=0).pack(pady=(8, 18))
+
     def pick_template(self):
         p = filedialog.askopenfilename(title="選擇模板 DOCX",
             filetypes=[("Word 文件","*.docx"),("所有檔案","*.*")])
         if p:
-            self.template_path = p
-            self.template_lbl.config(text=f"📄 {Path(p).name}", fg="white")
+            self._set_template(p, Path(p).name, p)
             # 只有在輸出路徑還是預設值時才自動更新，避免覆蓋使用者已設定的路徑
             current = self.output_var.get().strip()
             is_default = (not current or
@@ -2120,6 +2264,13 @@ class App:
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
         if hasattr(self, "page_count_lbl"):
             self.page_count_lbl.config(text=f"共 {len(self.pages)} 頁")
+        # 更新同步計數
+        desc_sync = sum(1 for c in self.cards if c.page.get("desc") is None)
+        loc_sync  = sum(1 for c in self.cards if c.page.get("loc")  is None)
+        if hasattr(self, "sync_desc_lbl"):
+            self.sync_desc_lbl.config(text=f"將同步至 {desc_sync} 頁" if desc_sync > 0 else "")
+        if hasattr(self, "sync_loc_lbl"):
+            self.sync_loc_lbl.config(text=f"將同步至 {loc_sync} 頁" if loc_sync > 0 else "")
         self._rebuilding = False
 
     # ── 專案存檔 / 匯入 ──
