@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 import platform
 IS_MAC = platform.system() == 'Darwin'
 
-VERSION = "1.6"
+VERSION = "3.1"
 GITHUB_REPO = "kikiwang351/photo-paste"
 
 def check_for_update(root):
