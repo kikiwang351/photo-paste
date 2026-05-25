@@ -5,7 +5,6 @@ By Kiki
 """
 
 import os, sys, shutil, zipfile, copy, re, threading, tempfile, json
-import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from lxml import etree
@@ -90,6 +89,8 @@ def get_bundled_templates():
     return [(n, base / n) for n in BUNDLED_TEMPLATES if (base / n).exists()]
 
 DEFAULT_LOCATION = "地點：臺中市西屯區文心路二段588號(偵查第八隊辦公室)"
+# 內建模板的預設頁首整行文字（臺中市刑事警察大隊偵辦000等人毒品案照片黏貼表）
+DEFAULT_HEADER   = "臺中市刑事警察大隊偵辦000等人毒品案照片黏貼表"
 COLS = 3  # 每排3欄，一次看更多
 
 def fix_ime_entry(entry):
@@ -269,42 +270,6 @@ def stamp_label(src_path, label):
     return out
 
 
-def merge_images(paths, layout, out_path):
-    """合併多張照片：layout = tb(上下) / lr(左右) / g4(四格2x2)"""
-    imgs = []
-    for p in paths:
-        try:
-            imgs.append(Image.open(p).convert("RGB"))
-        except Exception:
-            imgs.append(Image.new("RGB", (800, 600), (220, 220, 220)))  # 灰色佔位
-
-    if layout == "lr" and len(imgs) >= 2:
-        h = max(i.height for i in imgs[:2])
-        resized = [i.resize((int(i.width*h/i.height), h), Image.LANCZOS) for i in imgs[:2]]
-        out = Image.new("RGB", (sum(i.width for i in resized), h), (255,255,255))
-        x = 0
-        for im in resized: out.paste(im, (x, 0)); x += im.width
-
-    elif layout == "g4" and len(imgs) >= 4:
-        cw = max(i.width for i in imgs[:4])
-        ch = max(i.height for i in imgs[:4])
-        out = Image.new("RGB", (cw*2, ch*2), (255,255,255))
-        positions = [(0,0),(cw,0),(0,ch),(cw,ch)]
-        for im, (px,py) in zip(imgs[:4], positions):
-            im_r = im.resize((cw, int(im.height*cw/im.width)), Image.LANCZOS)
-            out.paste(im_r, (px, py))
-
-    else:  # tb 上下（預設）
-        w = max(i.width for i in imgs[:2])
-        resized = [i.resize((w, int(i.height*w/i.width)), Image.LANCZOS) for i in imgs[:2]]
-        out = Image.new("RGB", (w, sum(i.height for i in resized)), (255,255,255))
-        y = 0
-        for im in resized: out.paste(im, (0, y)); y += im.height
-
-    out.save(out_path, "JPEG", quality=95)
-    return out_path
-
-
 def make_grid_subtable(rIds, img_paths, pic_counter_start, cols, rows,
                        cell_w_dxa=9074, cell_h_dxa=11330):
     """建立 cols x rows 子表格，每格獨立放一張圖，可在 Word 單獨調整大小"""
@@ -373,10 +338,6 @@ def make_grid_subtable(rIds, img_paths, pic_counter_start, cols, rows,
     return tbl, pic_counter
 
 
-def make_six_subtable(rIds, img_paths, pic_counter_start, cell_w_dxa=9074, cell_h_dxa=11330):
-    return make_grid_subtable(rIds, img_paths, pic_counter_start, 3, 2, cell_w_dxa, cell_h_dxa)
-
-
 # ─────────────────────────────────────────────────────────────────────
 # 核心 DOCX 處理
 # ─────────────────────────────────────────────────────────────────────
@@ -432,7 +393,55 @@ def make_inline_image_xml(rId, emu_cx, emu_cy, pic_id):
     return etree.fromstring(xml_str)
 
 
-def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb, label_merged=True):
+def apply_custom_header(work_dir, header_text, log_cb):
+    """把內建模板頁首的標題段落整行換成使用者輸入的文字。
+
+    作法：掃描 word/header*.xml，找出含「照片黏貼表」的標題段落，
+    保留該段第一個 run 的格式（標楷體／字級／粗體），把整段 run 併成
+    一個新 run 放入 header_text。找不到標題段落就略過該檔（不報錯），
+    這是給「自訂模板沒有相同結構」時的安全網——但 UI 已限制只有內建
+    模板才會傳入 header_text。
+    """
+    XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+    header_files = sorted((work_dir / "word").glob("header*.xml"))
+    replaced = False
+    for hf in header_files:
+        try:
+            tree = etree.parse(str(hf))
+            root = tree.getroot()
+        except Exception:
+            continue
+        changed = False
+        for p in root.iter(f"{{{W}}}p"):
+            texts  = p.findall(f".//{{{W}}}t")
+            joined = "".join(t.text or "" for t in texts)
+            if "照片黏貼表" not in joined:
+                continue
+            runs = p.findall(f"{{{W}}}r")
+            if not runs:
+                continue
+            # 以第一個 run 的 rPr 當整行的格式範本
+            rpr = runs[0].find(f"{{{W}}}rPr")
+            rpr_copy = copy.deepcopy(rpr) if rpr is not None else None
+            for r in runs:
+                p.remove(r)
+            new_r = etree.SubElement(p, f"{{{W}}}r")
+            if rpr_copy is not None:
+                new_r.append(rpr_copy)
+            new_t = etree.SubElement(new_r, f"{{{W}}}t")
+            new_t.set(XML_SPACE, "preserve")
+            new_t.text = header_text
+            changed = True
+        if changed:
+            tree.write(str(hf), xml_declaration=True, encoding="UTF-8", standalone=True)
+            replaced = True
+    if replaced:
+        log_cb(f"📑 頁首已更新：{header_text}")
+    else:
+        log_cb("⚠️ 模板頁首找不到標題段落，已略過頁首更新")
+
+
+def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb, label_merged=True, header_text=None):
     work_dir = Path(tempfile.gettempdir()) / "pp_work"
     if work_dir.exists(): shutil.rmtree(work_dir)
     work_dir.mkdir()
@@ -487,7 +496,6 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
     first_cell = first_photo_row.find(f"{{{W}}}tc")
     tcW_elem   = first_cell.find(f".//{{{W}}}tcW")
     cell_w_dxa = int(tcW_elem.get(f"{{{W}}}w") or 9074) if tcW_elem is not None else 9074
-    cell_h_dxa = photo_rows[0][1]  # 直接用 photo_rows 裡的高度
 
     log_cb(f"📋 模板偵測：每頁 {photos_per_page} 張照片格")
 
@@ -709,6 +717,10 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
     rels_tree.write(str(rels_xml_path),       xml_declaration=True, encoding="UTF-8", standalone=True)
     ct_tree.write(str(content_types_path),    xml_declaration=True, encoding="UTF-8", standalone=True)
 
+    # 自訂頁首（只有內建模板會傳入 header_text；空字串/None 則維持模板原樣）
+    if header_text:
+        apply_custom_header(work_dir, header_text, log_cb)
+
     output_path = Path(output)
     if output_path.exists(): output_path.unlink()
     with zipfile.ZipFile(str(output_path), 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -873,13 +885,11 @@ class ThumbCard(tk.Frame):
         self.app   = app
         self._selected = False
 
-        self._card_w = card_w
         self._card_w_for_load = card_w
         thumb_w = card_w - 16
         thumb_h = int(thumb_w * 1.5)  # 固定高度
         placeholder = Image.new("RGB", (thumb_w, thumb_h), (220, 225, 210))
         self._photo = ImageTk.PhotoImage(placeholder)
-        self._thumb_w = thumb_w
         self._thumb_h = thumb_h
 
         # 卡片固定總高度：img + 說明+地點+標題+序號 約需 105px
@@ -1098,20 +1108,6 @@ class ThumbCard(tk.Frame):
         for child in self.winfo_children():
             if isinstance(child, tk.Frame): child.config(bg=color)
 
-    def update_index(self, idx):
-        """更新卡片編號顯示（智慧重建時重用卡片用）"""
-        self.index = idx
-        page = self.page
-        n = len(page.get("paths", []))
-        if page.get("type") == "blank":
-            label = f"#{idx+1}  ⬜ 空白頁"
-        elif n == 6: label = f"#{idx+1}  🌾 6合1"
-        elif n == 4: label = f"#{idx+1}  🔲 4合1"
-        elif n == 2: label = f"#{idx+1}  🌱 2合1"
-        elif page.get("paths"): label = f"#{idx+1}  {Path(page['paths'][0]).name}"
-        else: label = f"#{idx+1}"
-        self.num_label.config(text=label if len(label)<=45 else label[:42]+"...")
-
     def _load_preview_bg(self):
         """背景執行緒載入縮圖，完成後更新 UI"""
         try:
@@ -1197,6 +1193,7 @@ class App:
         self._canvas_w      = 800
         self._resize_after  = None
         self.template_path  = ""
+        self.template_is_bundled = False   # 是否使用內建模板（決定頁首欄可否編輯）
         self._history       = []   # undo stack (最多20步)
         self._redo_stack    = []   # redo stack
         self._rebuilding    = False
@@ -1366,6 +1363,18 @@ class App:
                  font=("", 10, "bold")).pack(pady=(14, 4), padx=14, anchor="w")
         sep()
 
+        lbl("📑  頁首標題（整行）")
+        _saved_header = load_config().get("last_header", DEFAULT_HEADER)
+        self.header_var = tk.StringVar(value=_saved_header)
+        self.header_var.trace_add("write", self._on_header_change)
+        self.header_entry = ent(self.header_var)
+        self.header_hint = tk.Label(right, text="",
+                 fg=C["subtext"], bg=C["bg3"], font=("", 7))
+        self.header_hint.pack(anchor="w", padx=16, pady=(0, 2))
+        # 初始先停用，等選到內建模板再開啟（_set_template / load_project 會更新）
+        self._update_header_field_state()
+        sep()
+
         lbl("📝  說明文字（共用預設）")
         self.desc_var = tk.StringVar(value="說明文字請填寫。")
         self.desc_var.trace_add("write", self._on_default_desc_change)
@@ -1450,6 +1459,22 @@ class App:
         for card in self.cards:
             card.sync_desc(default)
 
+    def _on_header_change(self, *args):
+        """頁首改變時記憶設定（下次開程式沿用）"""
+        save_config({"last_header": self.header_var.get().strip()})
+
+    def _update_header_field_state(self):
+        """頁首欄只在使用內建模板時可編輯；自訂上傳的模板則反白停用，
+        避免改了頁首卻因模板結構不同而套不上或出錯。"""
+        if not hasattr(self, "header_entry"):
+            return
+        if getattr(self, "template_is_bundled", False):
+            self.header_entry.config(state="normal")
+            self.header_hint.config(text="")
+        else:
+            self.header_entry.config(state="disabled")
+            self.header_hint.config(text="（自訂模板無法編輯頁首，僅內建模板可改）")
+
     def _on_default_loc_change(self, *args):
         """右側地點改變時，同步所有未自訂的縮圖地點欄，並記憶設定"""
         default = self.loc_var.get().strip()
@@ -1496,6 +1521,9 @@ class App:
         self.template_path = path
         self.template_lbl.config(text=f"📄 {display_name}", fg="white")
         save_config({"template": config_key})
+        # config_key 以 "bundled:" 開頭代表內建模板
+        self.template_is_bundled = config_key.startswith("bundled:")
+        self._update_header_field_state()
 
     def open_template_picker(self):
         """頂列「模板」按鈕 → 顯示選擇器"""
@@ -1961,16 +1989,6 @@ class App:
         return []
 
     # ── 圖片編輯 ──
-    def _get_selected_single_path(self):
-        if self._selected is None:
-            messagebox.showinfo("提示", "請先點選一張照片"); return None
-        page = self._selected.page
-        if page.get("type") == "blank":
-            messagebox.showinfo("提示", "空白頁無法編輯"); return None
-        if len(page.get("paths", [])) != 1:
-            messagebox.showinfo("提示", "請先拆開合併頁再編輯"); return None
-        return page["paths"][0]
-
     def _apply_transform(self, transform_fn):
         # 多選時套用到所有選取的單張照片
         targets = []
@@ -2154,7 +2172,6 @@ class App:
             except ValueError:
                 return (float("inf"), 0)
 
-        before = [p.get("sort_key","") for p in self.pages]
         self._save_history()
         self.pages.sort(key=parse_key)
         for idx, page in enumerate(self.pages):
@@ -2169,7 +2186,6 @@ class App:
         actual_w = self.canvas.winfo_width()
         canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
         card_w   = (canvas_w - 30) // COLS
-        default_desc = self.desc_var.get() if hasattr(self, "desc_var") else ""
 
         sel_page = self._selected.page if self._selected else None
         sel_multi = [c.page for c in self._selected_multi]
@@ -2331,6 +2347,7 @@ class App:
             "pages":         saved_pages,
             "desc":          self.desc_var.get(),
             "location":      self.loc_var.get(),
+            "header":        self.header_var.get(),
             "start_num":     self.start_var.get(),
             "template_path": self.template_path,
             "output_path":   str(folder_path / f"{folder_name}.docx"),
@@ -2348,7 +2365,9 @@ class App:
                              self.desc_var.get().strip(),
                              self.loc_var.get().strip(),
                              self.start_var.get(), self.log,
-                             label_merged=self.label_merged_var.get())
+                             label_merged=self.label_merged_var.get(),
+                             header_text=(self.header_var.get().strip()
+                                          if getattr(self, "template_is_bundled", False) else None))
                 self.log(f"📦 專案已儲存：{phk_path}")
                 def done():
                     messagebox.showinfo("💾 儲存完成",
@@ -2365,8 +2384,9 @@ class App:
                 self.root.after(0, done)
             except Exception as e:
                 import traceback
+                err_msg = str(e)   # 先存起來：except 結束後 e 會被回收，lambda 是延後執行
                 self.log(f"[ERROR] {e}\n{traceback.format_exc()}")
-                self.root.after(0, lambda: messagebox.showerror("錯誤", str(e)))
+                self.root.after(0, lambda m=err_msg: messagebox.showerror("錯誤", m))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2408,12 +2428,17 @@ class App:
         self.pages.extend(data.get("pages", []))
         self.desc_var.set(data.get("desc", ""))
         self.loc_var.set(data.get("location", DEFAULT_LOCATION))
+        self.header_var.set(data.get("header", DEFAULT_HEADER))
         self.start_var.set(data.get("start_num", 1))
 
         tmpl = data.get("template_path", "")
         if tmpl and Path(tmpl).exists():
             self.template_path = tmpl
             self.template_lbl.config(text=f"📄 {Path(tmpl).name}", fg="white")
+            # 判斷還原的模板是不是內建的，決定頁首欄可否編輯
+            bundled_paths = {str(p) for _, p in get_bundled_templates()}
+            self.template_is_bundled = str(tmpl) in bundled_paths
+            self._update_header_field_state()
 
         out = data.get("output_path", "")
         if out: self.output_var.set(out)
@@ -2478,7 +2503,9 @@ class App:
                              self.desc_var.get().strip(),
                              self.loc_var.get().strip(),
                              self.start_var.get(), self.log,
-                             label_merged=self.label_merged_var.get())
+                             label_merged=self.label_merged_var.get(),
+                             header_text=(self.header_var.get().strip()
+                                          if getattr(self, "template_is_bundled", False) else None))
                 def on_complete():
                     messagebox.showinfo("🌿 完成", f"輸出完成！\n\n{output}")
                     if self.open_after_var.get():
@@ -2494,8 +2521,9 @@ class App:
                 self.root.after(0, on_complete)
             except Exception as e:
                 import traceback
+                err_msg = str(e)   # 先存起來：except 結束後 e 會被回收，lambda 是延後執行
                 self.log(f"[ERROR] {e}\n{traceback.format_exc()}")
-                self.root.after(0, lambda: messagebox.showerror("錯誤", str(e)))
+                self.root.after(0, lambda m=err_msg: messagebox.showerror("錯誤", m))
 
         threading.Thread(target=worker, daemon=True).start()
 
