@@ -91,6 +91,12 @@ def get_bundled_templates():
 DEFAULT_LOCATION = "地點：臺中市西屯區文心路二段588號(偵查第八隊辦公室)"
 # 內建模板的預設頁首整行文字（臺中市刑事警察大隊偵辦000等人毒品案照片黏貼表）
 DEFAULT_HEADER   = "臺中市刑事警察大隊偵辦000等人毒品案照片黏貼表"
+
+# ── 說明/地點/編號 的字型與縮字設定（集中於此方便調整）──
+FORM_FONT         = "標楷體"   # 統一字型；空格子新建文字也一律用它，避免字體跑掉
+FORM_BASE_SZ      = 28        # 內文基準字級（half-point）= 14pt，標題/前綴永遠用這個
+FORM_KEEP_14_UPTO = 40        # 內容字數 ≤ 此值維持 14pt，超過才開始縮
+FORM_MIN_SZ       = 16        # 縮字安全下限（half-point）= 8pt，避免縮到看不見
 COLS = 3  # 每排3欄，一次看更多
 
 def fix_ime_entry(entry):
@@ -514,77 +520,62 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             el.set("Extension", ext_lower); el.set("ContentType", mime)
             registered_exts.add(ext_lower)
 
-    def set_cell_text(cell, text, min_sz=14):
-        """直接修改格子現有 run 的文字，完整保留模板字體／段落樣式"""
+    def set_cell_text(cell, text, keep_prefix=None):
+        """填入表單文字：字型一律標楷體；內容基準14pt、過長才縮（能多小就多小）。
+
+        keep_prefix：若提供且 text 以它開頭，前綴永遠 14pt（標題不縮），只縮後面內容。
+        標題格（說明／照片編號）在模板是獨立格、不會經過這裡，本來就維持 14pt。
+        """
+        text = text or ""
+        XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+        def make_rpr(sz):
+            """產生標楷體 + 指定字級的 rPr（child 順序符合 OOXML：rFonts→sz→szCs）"""
+            rPr = etree.Element(f"{{{W}}}rPr")
+            fonts = etree.SubElement(rPr, f"{{{W}}}rFonts")
+            for a in ("ascii", "eastAsia", "hAnsi"):
+                fonts.set(f"{{{W}}}{a}", FORM_FONT)
+            fonts.set(f"{{{W}}}hint", "eastAsia")
+            etree.SubElement(rPr, f"{{{W}}}sz").set(f"{{{W}}}val", str(sz))
+            etree.SubElement(rPr, f"{{{W}}}szCs").set(f"{{{W}}}val", str(sz))
+            return rPr
+
+        def content_sz(s):
+            """內容字級：≤門檻維持14pt，超過則線性縮小盡量塞滿，下限 FORM_MIN_SZ"""
+            n = len(s)
+            if n <= FORM_KEEP_14_UPTO:
+                return FORM_BASE_SZ
+            return max(FORM_MIN_SZ, int(FORM_BASE_SZ * FORM_KEEP_14_UPTO / n))
+
+        # 保留第一段（含 pPr 對齊等樣式），清掉多餘段落與所有 run
         paragraphs = cell.findall(f"{{{W}}}p")
-
-        # 若格子完全是空的，建立段落
-        if not paragraphs:
-            p = etree.SubElement(cell, f"{{{W}}}p")
-            r = etree.SubElement(p, f"{{{W}}}r")
-            t = etree.SubElement(r, f"{{{W}}}t")
-            t.text = text or ""
-            return
-
-        # 保留第一個段落（含段落樣式），移除多餘段落
-        p = paragraphs[0]
-        for extra in paragraphs[1:]:
-            cell.remove(extra)
-
-        # 讀出第一個 run 的字體大小，用於計算字數多時的縮小比例
-        runs = p.findall(f"{{{W}}}r")
-        max_sz = 28  # half-point，預設 14pt
-        for r in runs:
-            rPr = r.find(f"{{{W}}}rPr")
-            if rPr is not None:
-                sz_el = rPr.find(f"{{{W}}}sz")
-                if sz_el is not None:
-                    try: max_sz = int(sz_el.get(f"{{{W}}}val", "28"))
-                    except: pass
-                break
-
-        # 計算目標字體大小
-        sz_val = max_sz
-        if text and len(text) > 20:
-            sz_val = max(min_sz, max_sz - (len(text) - 20) // 5 * 2)
-
-        if runs:
-            # ── 直接修改第一個 run，保留其 rPr（字體／樣式完全不動）──
-            first_run = runs[0]
-
-            # 只在需要縮小時才動 sz
-            if sz_val != max_sz:
-                rPr = first_run.find(f"{{{W}}}rPr")
-                if rPr is None:
-                    rPr = etree.Element(f"{{{W}}}rPr")
-                    first_run.insert(0, rPr)
-                for tag in (f"{{{W}}}sz", f"{{{W}}}szCs"):
-                    el = rPr.find(tag)
-                    if el is None: el = etree.SubElement(rPr, tag)
-                    el.set(f"{{{W}}}val", str(sz_val))
-
-            # 設定文字
-            t_el = first_run.find(f"{{{W}}}t")
-            if t_el is None:
-                t_el = etree.SubElement(first_run, f"{{{W}}}t")
-            t_el.text = text or ""
-            if text and (text[0] == " " or text[-1] == " "):
-                t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-            else:
-                t_el.attrib.pop("{http://www.w3.org/XML/1998/namespace}space", None)
-
-            # 移除多餘的 run（第一個之後的）
-            for extra_r in runs[1:]:
-                p.remove(extra_r)
+        if paragraphs:
+            p = paragraphs[0]
+            for extra in paragraphs[1:]:
+                cell.remove(extra)
+            for r in p.findall(f"{{{W}}}r"):
+                p.remove(r)
         else:
-            # 段落裡沒有 run → 新建，但不改 pPr（保留段落樣式）
+            p = etree.SubElement(cell, f"{{{W}}}p")
+
+        # 切出「永遠14的前綴（標題）」與「可縮的內容」
+        if keep_prefix and text.startswith(keep_prefix):
+            prefix, body = keep_prefix, text[len(keep_prefix):]
+        else:
+            prefix, body = "", text
+
+        def add_run(s, sz):
+            if not s:
+                return
             r = etree.SubElement(p, f"{{{W}}}r")
-            if sz_val != max_sz:
-                rPr = etree.SubElement(r, f"{{{W}}}rPr")
-                for tag in (f"{{{W}}}sz", f"{{{W}}}szCs"):
-                    etree.SubElement(rPr, tag).set(f"{{{W}}}val", str(sz_val))
+            r.append(make_rpr(sz))
             t = etree.SubElement(r, f"{{{W}}}t")
-            t.text = text or ""
+            t.text = s
+            if s[0] == " " or s[-1] == " ":
+                t.set(XML_SPACE, "preserve")
+
+        add_run(prefix, FORM_BASE_SZ)        # 標題/前綴永遠 14pt
+        add_run(body, content_sz(body))      # 內容過長才縮
 
     sect_pr = body.find(f"{{{W}}}sectPr")
     for elem in list(body): body.remove(elem)
@@ -652,7 +643,9 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
             c2=rows[li].findall(f"{{{W}}}tc")
             if c2:
                 pl = page.get("loc")
-                set_cell_text(c2[0], pl if pl is not None else location_text)
+                # 地點：「地點：」前綴永遠14pt（標題不縮），只縮後面的地址
+                set_cell_text(c2[0], pl if pl is not None else location_text,
+                              keep_prefix="地點：")
 
     pic_counter  = 1
     total_pages  = len(pages)
