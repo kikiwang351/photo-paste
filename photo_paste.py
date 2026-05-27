@@ -1114,6 +1114,8 @@ class ThumbCard(tk.Frame):
 
     def _load_preview_bg(self):
         """背景執行緒載入縮圖，完成後更新 UI"""
+        if getattr(self.app, "_closed", False):
+            return   # 視窗已關就別再做白工
         try:
             card_w  = self._card_w_for_load
             thumb_w = card_w - 16
@@ -2481,13 +2483,24 @@ class App:
         messagebox.showinfo("匯入完成", f"已載入 {len(self.pages)} 頁，可繼續編輯！")
 
     def _on_close(self):
-        """關閉視窗時清理執行緒池，避免程式卡住"""
+        """關閉視窗時清理執行緒池，避免程式關不乾淨、行程殘留背景"""
         self._closed = True   # 讓背景 worker 知道視窗已關閉
         try:
-            _load_pool.shutdown(wait=False)
+            # cancel_futures 丟掉還沒開始的預覽任務（Python 3.9+），不等它跑完
+            try:
+                _load_pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                _load_pool.shutdown(wait=False)
         except Exception:
             pass
-        self.root.destroy()
+        try:
+            self.root.quit()      # 結束 mainloop
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def log(self, msg):
         """執行緒安全的 log：統一排到主執行緒執行"""
@@ -2563,3 +2576,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     App(root)
     root.mainloop()
+    # 視窗關閉後強制結束行程，避免執行緒池等背景任務造成程式殘留在背景
+    os._exit(0)
