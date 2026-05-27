@@ -19,8 +19,18 @@ IS_MAC = platform.system() == 'Darwin'
 VERSION = "3.1"
 GITHUB_REPO = "kikiwang351/photo-paste"
 
-def check_for_update(root):
-    """背景檢查是否有新版本，有的話跳出提示"""
+def _version_gt(a, b):
+    """a 是否比 b 新：用數字式比較，避免字串比較的 '3.10' < '3.9' 陷阱"""
+    def parse(v):
+        out = []
+        for x in str(v).split("."):
+            try: out.append(int(x))
+            except ValueError: out.append(0)
+        return out
+    return parse(a) > parse(b)
+
+def check_for_update(root, on_found=None):
+    """背景檢查是否有新版本；發現新版時呼叫 on_found(latest, exe_url)（預設直接跳提示）"""
     import urllib.request, json
 
     def _check():
@@ -30,12 +40,13 @@ def check_for_update(root):
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
             latest = data.get("tag_name", "").lstrip("v")
-            if not latest or latest <= VERSION:
+            if not latest or not _version_gt(latest, VERSION):
                 return
             exe_url = next((a["browser_download_url"] for a in data.get("assets", [])
                             if a["name"].endswith(".exe")), None)
             if exe_url:
-                root.after(0, lambda: _prompt_update(latest, exe_url))
+                cb = on_found or _prompt_update
+                root.after(0, lambda: cb(latest, exe_url))
         except Exception:
             pass  # 網路失敗就靜默跳過，不影響正常使用
 
@@ -1187,6 +1198,8 @@ class App:
         self._resize_after  = None
         self.template_path  = ""
         self.template_is_bundled = False   # 是否使用內建模板（決定頁首欄可否編輯）
+        self._picker_open    = False       # 模板選擇器是否開著（更新提示要避開它）
+        self._pending_update = None        # 待提示的新版本 (latest, exe_url)
         self._history       = []   # undo stack (最多20步)
         self._redo_stack    = []   # redo stack
         self._rebuilding    = False
@@ -1197,8 +1210,8 @@ class App:
         # 視窗關閉時清理執行緒池
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # 啟動後在背景檢查更新
-        check_for_update(self.root)
+        # 啟動後在背景檢查更新（發現新版先存著，等模板選擇器關掉再提示，避免被 modal 蓋住）
+        check_for_update(self.root, self._on_update_found)
 
         # 啟動後自動載入內建模板（100ms 後，確保 UI 已繪製完成）
         self.root.after(100, self._auto_load_template)
@@ -1503,6 +1516,19 @@ class App:
         self._resize_after = self.root.after(300, self._schedule_rebuild)
 
     # ── 模板 / 輸出 ──
+    def _on_update_found(self, latest, exe_url):
+        """背景查到新版：模板選擇器開著就先存著，等選完再提示，避免被 modal 蓋住"""
+        self._pending_update = (latest, exe_url)
+        if not self._picker_open:
+            self._show_pending_update()
+
+    def _show_pending_update(self):
+        """若有待提示的新版本，現在跳出更新提示"""
+        if self._pending_update:
+            latest, exe_url = self._pending_update
+            self._pending_update = None
+            _prompt_update(latest, exe_url)
+
     def _auto_load_template(self):
         """啟動時顯示模板選擇器"""
         bundled = get_bundled_templates()
@@ -1530,6 +1556,15 @@ class App:
         dlg.configure(bg=C["bg"])
         dlg.resizable(False, False)
         dlg.grab_set()
+        self._picker_open = True
+
+        def close_picker():
+            """關閉選擇器並解除 grab；選完後若有待提示的更新就跳出來"""
+            self._picker_open = False
+            try: dlg.destroy()
+            except Exception: pass
+            self.root.after(50, self._show_pending_update)
+        dlg.protocol("WM_DELETE_WINDOW", close_picker)
 
         tk.Label(dlg, text="選擇模板",
                  fg=C["text"], bg=C["bg"],
@@ -1555,7 +1590,7 @@ class App:
             mark = " ✓" if is_current else ""
             def pick(p=str(bpath), n=bname):
                 self._set_template(p, n, f"bundled:{n}")
-                dlg.destroy()
+                close_picker()
             tk.Button(btn_frame, text=f"📄 {display}{mark}",
                       command=pick,
                       bg=bg_color, fg="white", relief="flat",
@@ -1564,8 +1599,11 @@ class App:
                       justify="center").pack(side="left", padx=8)
 
         def pick_other():
-            dlg.destroy()
+            self._picker_open = False
+            try: dlg.destroy()
+            except Exception: pass
             self.pick_template()
+            self.root.after(50, self._show_pending_update)
         tk.Button(dlg, text="📂 選擇其他檔案…",
                   command=pick_other,
                   bg=C["btn_gray"], fg="white", relief="flat",
