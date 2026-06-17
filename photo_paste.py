@@ -1246,6 +1246,9 @@ class App:
         self.root.bind_all("<Control-a>", self.select_all)
         self.root.bind_all("<Control-A>", self.select_all)
 
+        # DEBUG：啟動時在記錄區明確標出目前版本，方便確認更新後真的換版成功
+        self.root.after(150, lambda: self.log(f"━━━ 照片黏貼工具 v{VERSION} 已啟動 ━━━"))
+
     def _build_ui(self):
         # ── 頂部標題列 ──
         top = tk.Frame(self.root, bg=C["topbar"])
