@@ -29,9 +29,18 @@ def _version_gt(a, b):
         return out
     return parse(a) > parse(b)
 
-def check_for_update(root, on_found=None):
-    """背景檢查是否有新版本；發現新版時呼叫 on_found(latest, exe_url)（預設直接跳提示）"""
+def check_for_update(root, on_found=None, on_status=None):
+    """背景檢查是否有新版本。
+    on_found(latest, exe_url): 發現新版時呼叫（預設直接跳提示）。
+    on_status(kind, detail):   回報檢查結果，kind 為 'newer'/'latest'/'error'，
+                               detail 為說明字串。供 DEBUG／手動檢查顯示結果用；
+                               自動檢查可不傳（保持安靜，不打擾使用者）。
+    """
     import urllib.request, json
+
+    def _report(kind, detail):
+        if on_status:
+            root.after(0, lambda: on_status(kind, detail))
 
     def _check():
         try:
@@ -40,15 +49,24 @@ def check_for_update(root, on_found=None):
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
             latest = data.get("tag_name", "").lstrip("v")
-            if not latest or not _version_gt(latest, VERSION):
+            if not latest:
+                _report("error", "GitHub 回應沒有版本號（tag_name 為空）")
+                return
+            if not _version_gt(latest, VERSION):
+                _report("latest", f"目前 v{VERSION} 已是最新版（線上最新 v{latest}）。")
                 return
             exe_url = next((a["browser_download_url"] for a in data.get("assets", [])
                             if a["name"].endswith(".exe")), None)
-            if exe_url:
-                cb = on_found or _prompt_update
-                root.after(0, lambda: cb(latest, exe_url))
-        except Exception:
-            pass  # 網路失敗就靜默跳過，不影響正常使用
+            if not exe_url:
+                _report("error", f"找到新版 v{latest}，但該 release 沒有 .exe 可下載。")
+                return
+            cb = on_found or _prompt_update
+            root.after(0, lambda: cb(latest, exe_url))
+            _report("newer", f"發現新版 v{latest}（目前 v{VERSION}）。")
+        except Exception as e:
+            # 自動檢查時靜默跳過（on_status=None）；手動檢查時把原因顯示出來方便 DEBUG
+            _report("error", f"檢查更新失敗：{type(e).__name__}: {e}\n"
+                             f"（可能是公司網路／防火牆擋了 api.github.com）")
 
     threading.Thread(target=_check, daemon=True).start()
 
@@ -1213,7 +1231,9 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # 啟動後在背景檢查更新（發現新版先存著，等模板選擇器關掉再提示，避免被 modal 蓋住）
-        check_for_update(self.root, self._on_update_found)
+        # on_status 只寫進記錄區、不跳視窗，啟動時不打擾，但留下 DEBUG 軌跡
+        check_for_update(self.root, self._on_update_found,
+                         lambda k, d: self._on_update_status(k, d, popup=False))
 
         # 啟動後自動載入內建模板（100ms 後，確保 UI 已繪製完成）
         self.root.after(100, self._auto_load_template)
@@ -1246,6 +1266,7 @@ class App:
         tb("💾  儲存",     self.save_project,   "#2f2f2f")
         tb("📥  匯入",     self.load_project,   "#2f2f2f")
         tb("📂  模板",     self.open_template_picker, "#2f2f2f")
+        tb("🔄  檢查更新", self.check_update_now,     "#2f2f2f")
 
         # 分隔線
         tk.Frame(top, bg="#333333", width=1).pack(side="right", fill="y", pady=8, padx=4)
@@ -1530,6 +1551,23 @@ class App:
             latest, exe_url = self._pending_update
             self._pending_update = None
             _prompt_update(latest, exe_url)
+
+    def check_update_now(self):
+        """手動檢查更新（DEBUG 用）：會把結果——含失敗原因——顯示出來"""
+        self.log(f"🔄 正在檢查更新…（目前 v{VERSION}）")
+        check_for_update(self.root, self._on_update_found,
+                         lambda k, d: self._on_update_status(k, d, popup=True))
+
+    def _on_update_status(self, kind, detail, popup=False):
+        """更新檢查結果回報：一律寫進記錄區；popup=True 時再跳視窗（手動檢查用）。
+        kind=='newer' 由 _on_update_found 負責跳下載提示，這裡不重複跳窗。"""
+        self.log(f"🔄 {detail}")
+        if not popup:
+            return
+        if kind == "error":
+            messagebox.showwarning("檢查更新", detail, parent=self.root)
+        elif kind == "latest":
+            messagebox.showinfo("檢查更新", detail, parent=self.root)
 
     def _auto_load_template(self):
         """啟動時顯示模板選擇器"""
