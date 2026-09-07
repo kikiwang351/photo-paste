@@ -194,6 +194,22 @@ def get_thumb(path, max_w, max_h):
         return Image.new("RGB", (min(max_w,4), min(max_h,3)), (220,225,210))
 
 
+def normalize_orientation(path):
+    """若照片含 EXIF 方向資訊（手機/相機拍的橫拍、倒拍），回傳『轉正後另存』的暫存檔路徑；
+    已是正向或無方向資訊則原樣回傳、不動檔案（不重存、不掉畫質）。"""
+    try:
+        img = Image.open(path)
+        orient = img.getexif().get(0x0112, 1)   # 0x0112 = EXIF Orientation
+        if orient in (0, 1):
+            return path
+        fixed = ImageOps.exif_transpose(img).convert("RGB")
+        tmp = tempfile.mktemp(suffix=".jpg")
+        fixed.save(tmp, "JPEG", quality=95)
+        return tmp
+    except Exception:
+        return path
+
+
 # Notion 現代風配色
 C = {
     "bg":         "#f7f7f5",   # 主背景（Notion 米白）
@@ -1765,10 +1781,13 @@ class App:
             if not final_paths:
                 messagebox.showinfo("提示", "資料夾內找不到照片"); return
 
+        new_pages = []
         for p in final_paths:
-            self.pages.append({"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""})
+            pg = {"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""}
+            self.pages.append(pg); new_pages.append(pg)
         self._schedule_rebuild()
         self.log(f"＋ 已新增 {len(final_paths)} 張照片（加在最後）")
+        self._normalize_orientation_async(new_pages)
 
     def insert_photos(self):
         """插入照片到選取頁後面（可一次多選）"""
@@ -1780,11 +1799,13 @@ class App:
 
         self._save_history()
         insert_idx = (self._selected.index + 1) if self._selected else len(self.pages)
+        new_pages = []
         for k, p in enumerate(paths):
-            self.pages.insert(insert_idx + k,
-                              {"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""})
+            pg = {"type":"photo","paths":[p],"orig_path":p,"desc":None,"loc":None,"sort_key":""}
+            self.pages.insert(insert_idx + k, pg); new_pages.append(pg)
         self._schedule_rebuild()
         self.log(f"📌 已插入 {len(paths)} 張照片（從第 {insert_idx+1} 頁開始）")
+        self._normalize_orientation_async(new_pages)
 
     def add_blank(self):
         self._save_history()
@@ -2303,6 +2324,34 @@ class App:
         for card in self.cards:
             if id(card.page) in page_ids:
                 card.reload_preview()
+
+    def _normalize_orientation_async(self, pages):
+        """背景把剛匯入、含 EXIF 方向的照片自動轉正（只重存需要的），完成後刷新縮圖。
+        在背景執行緒跑，匯入 300 張也不會卡住視窗。"""
+        targets = [p for p in pages
+                   if p.get("type") != "blank" and len(p.get("paths", [])) == 1]
+        if not targets: return
+
+        def worker():
+            changed = set()
+            for page in targets:
+                if getattr(self, "_closed", False): return
+                try:
+                    p = page["paths"][0]
+                    np_ = normalize_orientation(p)
+                    if np_ != p:
+                        page["paths"][0] = np_
+                        page["orig_path"] = np_
+                        changed.add(id(page))
+                except Exception:
+                    pass
+            if changed:
+                def done():
+                    self._refresh_changed_previews(changed)
+                    self.log(f"🔄 已自動轉正 {len(changed)} 張")
+                self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _grid_metrics(self, canvas_w):
         """依畫布寬度算欄數與卡片寬度：視窗越寬排越多欄，但每張縮圖維持適中大小。
