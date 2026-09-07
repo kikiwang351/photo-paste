@@ -1161,6 +1161,29 @@ class ThumbCard(tk.Frame):
         except Exception:
             pass
 
+    def update_index(self, idx):
+        """就地更新卡片顯示的序號與標題（差分重建重用卡片時用），不重載圖片"""
+        self.index = idx
+        page = self.page
+        n = len(page.get("paths", []))
+        if page.get("type") == "blank":
+            label = f"#{idx+1}  ⬜ 空白頁"
+        elif n == 6: label = f"#{idx+1}  🌾 6合1"
+        elif n == 4: label = f"#{idx+1}  🔲 4合1"
+        elif n == 2: label = f"#{idx+1}  🌱 2合1"
+        elif page.get("paths"): label = f"#{idx+1}  {Path(page['paths'][0]).name}"
+        else: label = f"#{idx+1}"
+        short = label if len(label) <= 45 else label[:42] + "..."
+        if hasattr(self, "num_label2"):
+            self.num_label2.config(text=short)
+
+    def reload_preview(self):
+        """圖片內容變了（旋轉/翻轉/裁切後）就地重載縮圖，不重建整張卡片"""
+        try:
+            _load_pool.submit(self._load_preview_bg)
+        except Exception:
+            pass
+
     def _on_desc_change(self, *args):
         if self._syncing: return
         val = self.desc_var.get().strip()
@@ -1464,7 +1487,7 @@ class App:
 
         # 合併照片自動加標示
         self.label_merged_var = tk.BooleanVar(value=True)
-        self.label_merged_var.trace_add("write", lambda *_: self._schedule_rebuild())
+        self.label_merged_var.trace_add("write", lambda *_: self._on_label_merged_toggle())
         tk.Checkbutton(right, text="合併照片自動加標示 (a / b / c…)",
                        variable=self.label_merged_var,
                        bg=C["right_bg"], fg=C["text"],
@@ -1490,6 +1513,11 @@ class App:
                 text=f"將同步至 {count} 頁" if count > 0 else "")
         for card in self.cards:
             card.sync_desc(default)
+
+    def _on_label_merged_toggle(self):
+        """切換「合併照片自動加標示」：只需就地重載合併頁縮圖（單張頁沒有標示，不用動）"""
+        merged_ids = {id(c.page) for c in self.cards if len(c.page.get("paths", [])) >= 2}
+        self._refresh_changed_previews(merged_ids)
 
     def _on_header_change(self, *args):
         """頁首改變時記憶設定（下次開程式沿用）"""
@@ -2085,29 +2113,43 @@ class App:
                 messagebox.showinfo("提示", "請先點選要編輯的照片縮圖，再使用圖片編輯功能"); return
             messagebox.showinfo("提示", "合併頁無法直接編輯，請先按「✂ 拆開」再編輯"); return
 
+        # 防止批次處理途中又被點一次而同時跑兩批
+        if getattr(self, "_transforming", False):
+            self.log("⏳ 上一批影像還在處理中，請稍候…"); return
+
         self._save_history()
         total = len(targets)
-        self.log(f"🔄 開始處理 {total} 張...")
-        changed_pages = set()
-        for idx, page in enumerate(targets):
+        self._transforming = True
+        self.log(f"🔄 開始處理 {total} 張…（背景執行，不會卡住視窗）")
+
+        def worker():
+            changed_pages = set()
             try:
-                path = page["paths"][0]
-                self.log(f"  [{idx+1}/{total}] 處理中：{Path(path).name}")
-                img = Image.open(path).convert("RGB")
-                result = transform_fn(img)
-                tmp = tempfile.mktemp(suffix=".jpg")
-                result.save(tmp, "JPEG", quality=95)
-                with _thumb_lock:
-                    keys_to_del = [k for k in _thumb_cache if k.startswith(path + "|")]
-                    for k in keys_to_del:
-                        del _thumb_cache[k]
-                page["paths"][0] = tmp
-                page["orig_path"] = tmp
-                changed_pages.add(id(page))
-            except Exception as e:
-                self.log(f"[錯誤] {e}")
-        self.log(f"✅ 完成，共處理 {len(changed_pages)} 張")
-        self._force_rebuild_pages(changed_pages)
+                for idx, page in enumerate(targets):
+                    if getattr(self, "_closed", False): return
+                    try:
+                        path = page["paths"][0]
+                        self.log(f"  [{idx+1}/{total}] 處理中：{Path(path).name}")
+                        img = Image.open(path).convert("RGB")
+                        result = transform_fn(img)
+                        tmp = tempfile.mktemp(suffix=".jpg")
+                        result.save(tmp, "JPEG", quality=95)
+                        with _thumb_lock:
+                            keys_to_del = [k for k in _thumb_cache if k.startswith(path + "|")]
+                            for k in keys_to_del:
+                                del _thumb_cache[k]
+                        page["paths"][0] = tmp
+                        page["orig_path"] = tmp
+                        changed_pages.add(id(page))
+                    except Exception as e:
+                        self.log(f"[錯誤] {e}")
+                self.log(f"✅ 完成，共處理 {len(changed_pages)} 張")
+            finally:
+                self._transforming = False
+                # 回主執行緒，就地重載有變動的縮圖（不重建整張卡片）
+                self.root.after(0, lambda: self._refresh_changed_previews(changed_pages))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def rotate_left(self):
         self._apply_transform(lambda img: img.rotate(90, expand=True))
@@ -2143,7 +2185,7 @@ class App:
                     for k in keys_to_del: del _thumb_cache[k]
                 self._selected.page["paths"][0] = new_path
                 self._selected.page["orig_path"] = orig
-                self._force_rebuild_pages({changed_id})
+                self._refresh_changed_previews({changed_id})
             elif mode == "new_page":
                 self.pages.insert(sel_idx + 1,
                                    {"type":"photo","paths":[new_path],
@@ -2254,8 +2296,16 @@ class App:
         self.log(f"🔢 已依序號排列並重新編號（共 {len(self.pages)} 頁）")
 
     # ── 縮圖重建 ──
+    def _refresh_changed_previews(self, page_ids):
+        """就地重載指定 page 的縮圖（旋轉/翻轉/裁切後用）：只換圖，不重建卡片、不動選取。
+        比 _force_rebuild_pages 輕很多，300 張全選旋轉也不會卡。"""
+        if not page_ids: return
+        for card in self.cards:
+            if id(card.page) in page_ids:
+                card.reload_preview()
+
     def _force_rebuild_pages(self, page_ids):
-        """強制重建特定 page 的縮圖卡片（旋轉/翻轉/裁切後用）"""
+        """強制重建特定 page 的縮圖卡片（保留作為後路，一般已改用 _refresh_changed_previews）"""
         self.canvas.update_idletasks()
         actual_w = self.canvas.winfo_width()
         canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
@@ -2304,66 +2354,88 @@ class App:
         self._rebuild_timer = self.root.after(delay, self._do_full_rebuild)
 
     def _do_full_rebuild(self):
-        """完整重建所有卡片（簡單可靠，無差分）"""
+        """差分重建：以 id(page) 為身分，重用現有卡片（只重新定位+改序號、不重載圖），
+        只有真正新增的頁才建新卡片、被刪的頁才銷毀。300 張新增/移動/刪除都不卡。
+        視窗寬度變了（縮放）時，寬度不符的卡片才會整個重建。"""
         self._rebuild_timer = None
         if self._rebuilding: return
         self._rebuilding = True
+        try:
+            self.canvas.update_idletasks()
+            actual_w = self.canvas.winfo_width()
+            canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
+            card_w   = (canvas_w - 30) // COLS
+            default_desc = self.desc_var.get() if hasattr(self, "desc_var") else ""
+            default_loc  = self.loc_var.get()  if hasattr(self, "loc_var")  else ""
 
-        sel_page        = self._selected.page if self._selected else None
-        sel_multi_pages = {id(c.page) for c in self._selected_multi}
+            # 先記住目前選取的頁（以身分），重建後還原（涵蓋因寬度改變而重建的卡片）
+            sel_page_id  = id(self._selected.page) if self._selected else None
+            sel_multi_ids = {id(c.page) for c in self._selected_multi}
 
-        self.canvas.update_idletasks()
-        actual_w = self.canvas.winfo_width()
-        canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
-        card_w   = (canvas_w - 30) // COLS
-        default_desc = self.desc_var.get() if hasattr(self, "desc_var") else ""
-        default_loc  = self.loc_var.get()  if hasattr(self, "loc_var")  else ""
+            # 以身分建立現有卡片索引
+            existing = {}
+            for card in self.cards:
+                existing.setdefault(id(card.page), card)
 
-        # 銷毀所有舊卡片
-        for card in self.cards:
-            card.destroy()
-        self.cards.clear()
-        self._selected       = None
-        self._selected_multi = []
+            new_cards = []
+            used = set()
+            for i, page in enumerate(self.pages):
+                card = existing.get(id(page))
+                # 寬度不符（視窗縮放過）就當作要重建，避免縮圖大小錯亂
+                reuse = (card is not None and id(page) not in used
+                         and getattr(card, "_card_w_for_load", None) == card_w)
+                if reuse:
+                    used.add(id(page))
+                    if card.index != i:
+                        card.update_index(i)
+                else:
+                    card = ThumbCard(self.thumb_frame, page, i, self, card_w=card_w)
+                    if page.get("desc") is None:
+                        card._syncing = True; card.desc_var.set(default_desc); card._syncing = False
+                    if page.get("loc") is None and hasattr(card, "loc_var2"):
+                        card._syncing = True; card.loc_var2.set(default_loc); card._syncing = False
+                    sk = page.get("sort_key","") or str(i+1)
+                    if not page.get("sort_key",""):
+                        page["sort_key"] = str(i+1)
+                    if hasattr(card, "sort_var"):
+                        card.sort_var.set(sk)
+                row, col = divmod(i, COLS)
+                card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
+                new_cards.append(card)
 
-        # 重建所有卡片
-        for i, page in enumerate(self.pages):
-            card = ThumbCard(self.thumb_frame, page, i, self, card_w=card_w)
-            if page.get("desc") is None:
-                card._syncing = True
-                card.desc_var.set(default_desc)
-                card._syncing = False
-            if page.get("loc") is None and hasattr(card, "loc_var2"):
-                card._syncing = True
-                card.loc_var2.set(default_loc)
-                card._syncing = False
-            sk = page.get("sort_key","") or str(i+1)
-            if not page.get("sort_key",""):
-                page["sort_key"] = str(i+1)
-            if hasattr(card, "sort_var"):
-                card.sort_var.set(sk)
-            row, col = divmod(i, COLS)
-            card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
-            self.cards.append(card)
-            if page is sel_page:
-                card.set_selected(True)
-                self._selected = card
-            elif id(page) in sel_multi_pages:
-                card.set_selected(True)
-                self._selected_multi.append(card)
+            # 銷毀不再需要的卡片（被刪除或被重建取代的舊卡片）
+            keep = set(id(c) for c in new_cards)
+            for card in self.cards:
+                if id(card) not in keep:
+                    card.destroy()
 
-        self.thumb_frame.update_idletasks()
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
-        if hasattr(self, "page_count_lbl"):
-            self.page_count_lbl.config(text=f"共 {len(self.pages)} 頁")
-        # 更新同步計數
-        desc_sync = sum(1 for c in self.cards if c.page.get("desc") is None)
-        loc_sync  = sum(1 for c in self.cards if c.page.get("loc")  is None)
-        if hasattr(self, "sync_desc_lbl"):
-            self.sync_desc_lbl.config(text=f"將同步至 {desc_sync} 頁" if desc_sync > 0 else "")
-        if hasattr(self, "sync_loc_lbl"):
-            self.sync_loc_lbl.config(text=f"將同步至 {loc_sync} 頁" if loc_sync > 0 else "")
-        self._rebuilding = False
+            self.cards = new_cards
+
+            # 還原選取狀態（用新的卡片清單，重建的卡片也能正確反白）
+            self._selected = None
+            self._selected_multi = []
+            for card in new_cards:
+                pid = id(card.page)
+                if pid in sel_multi_ids:
+                    card.set_selected(True)
+                    self._selected_multi.append(card)
+                if pid == sel_page_id:
+                    card.set_selected(True)
+                    self._selected = card
+
+            self.thumb_frame.update_idletasks()
+            self.canvas.config(scrollregion=self.canvas.bbox("all"))
+            if hasattr(self, "page_count_lbl"):
+                self.page_count_lbl.config(text=f"共 {len(self.pages)} 頁")
+            # 更新同步計數
+            desc_sync = sum(1 for c in self.cards if c.page.get("desc") is None)
+            loc_sync  = sum(1 for c in self.cards if c.page.get("loc")  is None)
+            if hasattr(self, "sync_desc_lbl"):
+                self.sync_desc_lbl.config(text=f"將同步至 {desc_sync} 頁" if desc_sync > 0 else "")
+            if hasattr(self, "sync_loc_lbl"):
+                self.sync_loc_lbl.config(text=f"將同步至 {loc_sync} 頁" if loc_sync > 0 else "")
+        finally:
+            self._rebuilding = False
 
     # ── 專案存檔 / 匯入 ──
     def save_project(self):
