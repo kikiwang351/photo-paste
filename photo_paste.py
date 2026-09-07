@@ -2304,12 +2304,21 @@ class App:
             if id(card.page) in page_ids:
                 card.reload_preview()
 
+    def _grid_metrics(self, canvas_w):
+        """依畫布寬度算欄數與卡片寬度：視窗越寬排越多欄，但每張縮圖維持適中大小。
+        避免最大化時縮圖過大，導致 118/300 張重算把畫面塞爆（跑不出來）。"""
+        TARGET = 240   # 每張卡片目標寬度(px)
+        usable = max(1, canvas_w - 30)
+        cols   = max(COLS, round(usable / TARGET))   # 至少 COLS(3) 欄
+        card_w = usable // cols
+        return cols, card_w
+
     def _force_rebuild_pages(self, page_ids):
         """強制重建特定 page 的縮圖卡片（保留作為後路，一般已改用 _refresh_changed_previews）"""
         self.canvas.update_idletasks()
         actual_w = self.canvas.winfo_width()
         canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
-        card_w   = (canvas_w - 30) // COLS
+        cols, card_w = self._grid_metrics(canvas_w)
 
         sel_page = self._selected.page if self._selected else None
         sel_multi = [c.page for c in self._selected_multi]
@@ -2330,7 +2339,7 @@ class App:
                 if hasattr(new_card, "sort_var"): new_card.sort_var.set(old_sort)
                 new_card._syncing = False
 
-                row, col = divmod(i, COLS)
+                row, col = divmod(i, cols)
                 new_card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
 
                 if page is sel_page:
@@ -2364,7 +2373,7 @@ class App:
             self.canvas.update_idletasks()
             actual_w = self.canvas.winfo_width()
             canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
-            card_w   = (canvas_w - 30) // COLS
+            cols, card_w = self._grid_metrics(canvas_w)
             default_desc = self.desc_var.get() if hasattr(self, "desc_var") else ""
             default_loc  = self.loc_var.get()  if hasattr(self, "loc_var")  else ""
 
@@ -2399,7 +2408,7 @@ class App:
                         page["sort_key"] = str(i+1)
                     if hasattr(card, "sort_var"):
                         card.sort_var.set(sk)
-                row, col = divmod(i, COLS)
+                row, col = divmod(i, cols)
                 card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
                 new_cards.append(card)
 
