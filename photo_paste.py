@@ -210,75 +210,6 @@ def normalize_orientation(path):
         return path
 
 
-def detect_screen_bbox(path):
-    """偵測『手機亮螢幕』外框，回傳原圖座標 (x1,y1,x2,y2)；信心不足回 None。
-    做法：縮小→灰階→找亮像素→用欄/列投影抓出中央那塊又大又亮的區域（螢幕），
-    零星塗鴉白點會被『最長連續帶』濾掉；再往外擴一點含黑邊。
-    偏保守：寧可框大留背景，也不切到內容；純 PIL，不加重量套件。"""
-    try:
-        im = ImageOps.exif_transpose(Image.open(path)).convert("L")
-        W0, H0 = im.size
-        if W0 < 40 or H0 < 40:
-            return None
-        SW = 200
-        s  = SW / W0
-        w  = SW
-        h  = max(1, int(H0 * s))
-        small = im.resize((w, h))
-        px = small.load()
-
-        # 亮門檻：螢幕通常明顯比背景亮
-        hist  = small.histogram()
-        total = w * h
-        mean  = sum(i * hist[i] for i in range(256)) / max(1, total)
-        thr   = max(150, mean + 25)
-
-        col_bright = [0] * w
-        row_bright = [0] * h
-        for y in range(h):
-            base = y
-            for x in range(w):
-                if px[x, base] >= thr:
-                    col_bright[x] += 1
-                    row_bright[y] += 1
-
-        cols = [x for x in range(w) if col_bright[x] >= 0.35 * h]
-        rows = [y for y in range(h) if row_bright[y] >= 0.35 * w]
-        if not cols or not rows:
-            return None
-
-        def longest_run(idxs):
-            best_lo, best_hi = idxs[0], idxs[0]
-            cur_lo,  cur_hi  = idxs[0], idxs[0]
-            for v in idxs[1:]:
-                if v == cur_hi + 1:
-                    cur_hi = v
-                else:
-                    if cur_hi - cur_lo > best_hi - best_lo:
-                        best_lo, best_hi = cur_lo, cur_hi
-                    cur_lo = cur_hi = v
-            if cur_hi - cur_lo > best_hi - best_lo:
-                best_lo, best_hi = cur_lo, cur_hi
-            return best_lo, best_hi
-
-        x1, x2 = longest_run(cols)
-        y1, y2 = longest_run(rows)
-
-        # 外擴含黑邊（各約 4%）
-        mx = int(0.04 * w); my = int(0.04 * h)
-        x1 = max(0, x1 - mx); x2 = min(w - 1, x2 + mx)
-        y1 = max(0, y1 - my); y2 = min(h - 1, y2 + my)
-
-        bw, bh = x2 - x1, y2 - y1
-        # 合理性檢查：太小/幾乎整張都被選 → 視為偵測失敗
-        if bw < 0.25 * w or bh < 0.25 * h or bw > 0.98 * w or bh > 0.995 * h:
-            return None
-
-        return (int(x1 / s), int(y1 / s), int(x2 / s), int(y2 / s))
-    except Exception:
-        return None
-
-
 # Notion 現代風配色
 C = {
     "bg":         "#f7f7f5",   # 主背景（Notion 米白）
@@ -847,13 +778,14 @@ def process_docx(template, output, pages, desc_text, location_text, start_num, l
 # ─────────────────────────────────────────────────────────────────────
 
 class CropWindow(tk.Toplevel):
-    def __init__(self, parent, img_path, callback, init_box=None):
+    _last_pos = None   # 記住上次視窗位置，跨次開啟沿用（不再每次固定跳回原處）
+
+    def __init__(self, parent, img_path, callback):
         super().__init__(parent)
         self.title("✂  裁切 / 旋轉照片")
         self.configure(bg=C["bg"])
         self.resizable(True, True)
         self.callback  = callback
-        self._init_box = init_box   # 自動偵測的建議框（原圖座標），可為 None
         self.orig_img  = ImageOps.exif_transpose(Image.open(img_path)).convert("RGB")
         self._rect     = self._start = self._end = None
         self._angle    = 0.0
@@ -910,24 +842,15 @@ class CropWindow(tk.Toplevel):
         self.bind("<Escape>", lambda e: self.destroy())
         self.grab_set()
         self._redraw()
-        self._draw_init_box()
+        # 還原上次視窗位置：你把裁切視窗拖到哪，下次開就開在那，不再固定跳回原處
+        if CropWindow._last_pos:
+            try: self.geometry("+%d+%d" % CropWindow._last_pos)
+            except Exception: pass
+        self.bind("<Configure>", self._remember_pos)
 
-    def _draw_init_box(self):
-        """把自動偵測的建議框畫上去（顯示座標），使用者可直接拖拉調整。"""
-        if not self._init_box:
-            return
-        try:
-            x1, y1, x2, y2 = self._init_box
-            sx1, sy1 = x1 * self.scale, y1 * self.scale
-            sx2, sy2 = x2 * self.scale, y2 * self.scale
-            self._start = (sx1, sy1)
-            self._end   = (sx2, sy2)
-            if self._rect:
-                self.cv.delete(self._rect)
-            self._rect = self.cv.create_rectangle(
-                sx1, sy1, sx2, sy2, outline="#e67e22", width=2, dash=(5, 3))
-        except Exception:
-            pass
+    def _remember_pos(self, e):
+        if e.widget is self:
+            CropWindow._last_pos = (self.winfo_x(), self.winfo_y())
 
     def _update_scale(self, img):
         w, h = img.size
@@ -1469,7 +1392,6 @@ class App:
         eb("↔ 橫翻",   self.flip_h)
         eb("↕ 縱翻",   self.flip_v)
         eb("✂ 裁切",   self.open_crop)
-        eb("🔲 自動裁切", self.auto_crop_all)
 
         hint_row = tk.Frame(left, bg=C["bg"])
         hint_row.pack(fill="x", padx=10, pady=(4,2))
@@ -2301,64 +2223,7 @@ class App:
                                    {"type":"photo","paths":[new_path],
                                     "orig_path":orig,"desc":None,"loc":None,"sort_key":""})
                 self._schedule_rebuild()
-        # 自動偵測手機螢幕，開窗時先畫好建議框（偵測不到就 None，維持全空白讓你手動）
-        init_box = detect_screen_bbox(orig)
-        CropWindow(self.root, orig, on_crop_done, init_box=init_box)
-
-    def auto_crop_all(self):
-        """批次自動裁切所有單張照片（盡力版）：偵測手機螢幕外框、裁切、就地換圖。
-        背景執行不卡；偵測不到把握的會跳過、留原圖；有『↩ 上一步』可整批復原。"""
-        if getattr(self, "_transforming", False):
-            self.log("⏳ 上一批影像還在處理中，請稍候…"); return
-        targets = [p for p in self.pages
-                   if p.get("type") != "blank" and len(p.get("paths", [])) == 1]
-        if not targets:
-            messagebox.showinfo("提示", "沒有可裁切的單張照片"); return
-        if not messagebox.askyesno(
-                "🔲 自動裁切（盡力版）",
-                f"要對 {len(targets)} 張照片自動裁切、框住手機嗎？\n\n"
-                f"• 偵測不到把握的會自動跳過、保留原圖\n"
-                f"• 切歪的可事後逐張重裁（會從原圖重來）\n"
-                f"• 有「↩ 上一步」可整批復原\n\n"
-                f"建議先用一小批（10~20 張）測試效果。"):
-            return
-
-        self._save_history()
-        total = len(targets)
-        self._transforming = True
-        self.log(f"🔲 開始自動裁切 {total} 張…（背景執行，不會卡住視窗）")
-
-        def worker():
-            changed = set(); ok = 0; skip = 0
-            try:
-                for idx, page in enumerate(targets):
-                    if getattr(self, "_closed", False): return
-                    try:
-                        path = page["paths"][0]
-                        self.log(f"  [{idx+1}/{total}] {Path(path).name}")
-                        box = detect_screen_bbox(path)
-                        if not box:
-                            skip += 1; continue
-                        img  = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-                        crop = img.crop(box)
-                        tmp  = tempfile.mktemp(suffix=".jpg")
-                        crop.save(tmp, "JPEG", quality=95)
-                        with _thumb_lock:
-                            for k in [k for k in _thumb_cache if k.startswith(path + "|")]:
-                                del _thumb_cache[k]
-                        # 只換顯示用的 paths[0]，保留 orig_path 為原始圖，方便事後重裁
-                        if not page.get("orig_path"):
-                            page["orig_path"] = path
-                        page["paths"][0] = tmp
-                        changed.add(id(page)); ok += 1
-                    except Exception as e:
-                        self.log(f"[錯誤] {e}")
-                self.log(f"✅ 自動裁切完成：成功 {ok} 張、跳過(無把握) {skip} 張")
-            finally:
-                self._transforming = False
-                self.root.after(0, lambda: self._refresh_changed_previews(changed))
-
-        threading.Thread(target=worker, daemon=True).start()
+        CropWindow(self.root, orig, on_crop_done)
 
     # ── 復原 ──
     def _sync_descs_to_pages(self):
@@ -2465,7 +2330,7 @@ class App:
     # ── 縮圖重建 ──
     def _refresh_changed_previews(self, page_ids):
         """就地重載指定 page 的縮圖（旋轉/翻轉/裁切後用）：只換圖，不重建卡片、不動選取。
-        比 _force_rebuild_pages 輕很多，300 張全選旋轉也不會卡。"""
+        很輕量，300 張全選旋轉也不會卡。"""
         if not page_ids: return
         for card in self.cards:
             if id(card.page) in page_ids:
@@ -2508,49 +2373,6 @@ class App:
         cols   = max(COLS, int(usable // (TARGET + PAD)))    # 至少 COLS(3) 欄
         card_w = max(150, (usable // cols) - PAD)            # 扣間距，避免切邊
         return cols, card_w
-
-    def _force_rebuild_pages(self, page_ids):
-        """強制重建特定 page 的縮圖卡片（保留作為後路，一般已改用 _refresh_changed_previews）"""
-        self.canvas.update_idletasks()
-        actual_w = self.canvas.winfo_width()
-        canvas_w = max(600, actual_w if actual_w > 1 else self._canvas_w)
-        cols, card_w = self._grid_metrics(canvas_w)
-
-        sel_page = self._selected.page if self._selected else None
-        sel_multi = [c.page for c in self._selected_multi]
-
-        for i, card in enumerate(self.cards):
-            if id(card.page) in page_ids:
-                # 完整重建卡片（保留說明和地點欄的值）
-                page = card.page
-                old_desc = card.desc_var.get()
-                old_loc  = card.loc_var2.get() if hasattr(card, "loc_var2") else ""
-                old_sort = card.sort_var.get() if hasattr(card, "sort_var") else ""
-
-                new_card = ThumbCard(self.thumb_frame, page, i, self, card_w=card_w)
-                # 還原說明/地點/排序
-                new_card._syncing = True
-                new_card.desc_var.set(old_desc)
-                if hasattr(new_card, "loc_var2"): new_card.loc_var2.set(old_loc)
-                if hasattr(new_card, "sort_var"): new_card.sort_var.set(old_sort)
-                new_card._syncing = False
-
-                row, col = divmod(i, cols)
-                new_card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
-
-                if page is sel_page:
-                    new_card.set_selected(True)
-                    self._selected = new_card
-                elif page in sel_multi:
-                    new_card.set_selected(True)
-                    idx = self._selected_multi.index(card)
-                    self._selected_multi[idx] = new_card
-
-                card.destroy()
-                self.cards[i] = new_card
-
-        self.thumb_frame.update_idletasks()
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
     def _schedule_rebuild(self, delay=80):
         """防抖重建：delay ms 後執行，期間若再呼叫重置計時"""
