@@ -31,7 +31,8 @@ def _version_gt(a, b):
 
 def check_for_update(root, on_found=None, on_status=None):
     """背景檢查是否有新版本。
-    on_found(latest, exe_url): 發現新版時呼叫（預設直接跳提示）。
+    on_found(latest, exe_url, notes): 發現新版時呼叫（預設直接跳提示）；notes 為該版
+                               在 GitHub Release 的更新說明（新增功能），可能為空字串。
     on_status(kind, detail):   回報檢查結果，kind 為 'newer'/'latest'/'error'，
                                detail 為說明字串。供 DEBUG／手動檢查顯示結果用；
                                自動檢查可不傳（保持安靜，不打擾使用者）。
@@ -60,8 +61,9 @@ def check_for_update(root, on_found=None, on_status=None):
             if not exe_url:
                 _report("error", f"找到新版 v{latest}，但該 release 沒有 .exe 可下載。")
                 return
+            notes = (data.get("body") or "").strip()   # Release 更新說明（新增功能）
             cb = on_found or _prompt_update
-            root.after(0, lambda: cb(latest, exe_url))
+            root.after(0, lambda: cb(latest, exe_url, notes))
             _report("newer", f"發現新版 v{latest}（目前 v{VERSION}）。")
         except Exception as e:
             # 自動檢查時靜默跳過（on_status=None）；手動檢查時把原因顯示出來方便 DEBUG
@@ -70,12 +72,18 @@ def check_for_update(root, on_found=None, on_status=None):
 
     threading.Thread(target=_check, daemon=True).start()
 
-def _prompt_update(latest, exe_url):
+def _prompt_update(latest, exe_url, notes=""):
     import webbrowser
-    ans = messagebox.askyesno(
-        "🌿 發現新版本！",
-        f"目前版本：v{VERSION}\n最新版本：v{latest}\n\n點「是」開啟下載頁面，下載後覆蓋舊檔案即可完成更新。"
-    )
+    msg = f"目前版本：v{VERSION}\n最新版本：v{latest}\n"
+    if notes:
+        # 過濾掉 commit 的附註行（Co-Authored-By 等），只顯示前幾行，避免視窗過長
+        skip = ("co-authored-by:", "🤖", "generated with")
+        lines = [ln for ln in notes.splitlines()
+                 if ln.strip() and not ln.strip().lower().startswith(skip)][:8]
+        if lines:
+            msg += "\n【這次更新】\n" + "\n".join(lines) + "\n"
+    msg += "\n點「是」開啟下載頁面，下載後覆蓋舊檔案即可完成更新。"
+    ans = messagebox.askyesno("🌿 發現新版本！", msg)
     if ans:
         webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
 
@@ -493,9 +501,9 @@ def apply_custom_header(work_dir, header_text, log_cb):
 
 
 def process_docx(template, output, pages, desc_text, location_text, start_num, log_cb, label_merged=True, header_text=None):
-    work_dir = Path(tempfile.gettempdir()) / "pp_work"
-    if work_dir.exists(): shutil.rmtree(work_dir)
-    work_dir.mkdir()
+    # 每次用獨立暫存資料夾：避免「開始製作」「儲存」同時跑、或連點兩下時
+    # 共用同一個資料夾而互相刪除、導致產檔損壞
+    work_dir = Path(tempfile.mkdtemp(prefix="pp_work_"))
     _stamp_tmps = []   # 追蹤 stamp_label 產生的暫存檔，最後統一刪除
 
     with zipfile.ZipFile(template, 'r') as z:
@@ -1269,11 +1277,14 @@ class App:
         self.template_path  = ""
         self.template_is_bundled = False   # 是否使用內建模板（決定頁首欄可否編輯）
         self._picker_open    = False       # 模板選擇器是否開著（更新提示要避開它）
-        self._pending_update = None        # 待提示的新版本 (latest, exe_url)
+        self._pending_update = None        # 待提示的新版本 (latest, exe_url, notes)
         self._history       = []   # undo stack (最多20步)
         self._redo_stack    = []   # redo stack
         self._rebuilding    = False
         self._rebuild_timer = None
+        self._rebuild_pending = False      # 分批重建進行中又收到重建請求時，結束後補跑
+        self._producing     = False        # 產生 Word 中（開始製作/儲存），避免重複執行
+        self._normalizing   = 0            # 背景自動轉正進行中的批次數
 
         self._build_ui()
 
@@ -1597,18 +1608,18 @@ class App:
         self._resize_after = self.root.after(300, self._schedule_rebuild)
 
     # ── 模板 / 輸出 ──
-    def _on_update_found(self, latest, exe_url):
+    def _on_update_found(self, latest, exe_url, notes=""):
         """背景查到新版：模板選擇器開著就先存著，等選完再提示，避免被 modal 蓋住"""
-        self._pending_update = (latest, exe_url)
+        self._pending_update = (latest, exe_url, notes)
         if not self._picker_open:
             self._show_pending_update()
 
     def _show_pending_update(self):
-        """若有待提示的新版本，現在跳出更新提示"""
+        """若有待提示的新版本，現在跳出更新提示（含這次的新增功能說明）"""
         if self._pending_update:
-            latest, exe_url = self._pending_update
+            latest, exe_url, notes = self._pending_update
             self._pending_update = None
-            _prompt_update(latest, exe_url)
+            _prompt_update(latest, exe_url, notes)
 
     def check_update_now(self):
         """手動檢查更新（DEBUG 用）：會把結果——含失敗原因——顯示出來"""
@@ -2343,26 +2354,41 @@ class App:
                    if p.get("type") != "blank" and len(p.get("paths", [])) == 1]
         if not targets: return
 
+        self._normalizing += 1   # 標記背景轉正進行中，讓「開始製作」知道要等
+
         def worker():
             changed = set()
-            for page in targets:
-                if getattr(self, "_closed", False): return
-                try:
-                    p = page["paths"][0]
-                    np_ = normalize_orientation(p)
-                    if np_ != p:
-                        page["paths"][0] = np_
-                        page["orig_path"] = np_
-                        changed.add(id(page))
-                except Exception:
-                    pass
-            if changed:
-                def done():
-                    self._refresh_changed_previews(changed)
-                    self.log(f"🔄 已自動轉正 {len(changed)} 張")
-                self.root.after(0, done)
+            try:
+                for page in targets:
+                    if getattr(self, "_closed", False): return
+                    try:
+                        p = page["paths"][0]
+                        np_ = normalize_orientation(p)
+                        if np_ != p:
+                            page["paths"][0] = np_
+                            page["orig_path"] = np_
+                            changed.add(id(page))
+                    except Exception:
+                        pass
+            finally:
+                self._normalizing = max(0, self._normalizing - 1)
+                if changed:
+                    def done():
+                        self._refresh_changed_previews(changed)
+                        self.log(f"🔄 已自動轉正 {len(changed)} 張")
+                    self.root.after(0, done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _busy_reason(self):
+        """回傳目前『不該產檔』的原因字串；沒有就回 None。"""
+        if getattr(self, "_producing", False):
+            return "正在產生 Word，請稍候完成再操作。"
+        if getattr(self, "_transforming", False):
+            return "照片正在旋轉／翻轉處理中，請稍候。"
+        if getattr(self, "_normalizing", 0) > 0:
+            return "照片正在自動轉正中，請稍候再產出，以免夾雜未轉正的照片。"
+        return None
 
     def _grid_metrics(self, canvas_w):
         """依畫布寬度算欄數與卡片寬度：視窗越寬排越多欄，每張縮圖維持易讀大小。
@@ -2381,11 +2407,14 @@ class App:
         self._rebuild_timer = self.root.after(delay, self._do_full_rebuild)
 
     def _do_full_rebuild(self):
-        """差分重建：以 id(page) 為身分，重用現有卡片（只重新定位+改序號、不重載圖），
-        只有真正新增的頁才建新卡片、被刪的頁才銷毀。300 張新增/移動/刪除都不卡。
+        """差分重建：以 id(page) 為身分，重用現有卡片（只重定位+改序號、不重載圖），
+        只有新增的頁才建新卡片、被刪的頁才銷毀。新卡片很多時（初次載入大量照片）
+        會分批用 root.after 排程建立，避免一次建幾千個元件卡住主執行緒。
         視窗寬度變了（縮放）時，寬度不符的卡片才會整個重建。"""
         self._rebuild_timer = None
-        if self._rebuilding: return
+        if self._rebuilding:
+            self._rebuild_pending = True   # 分批建立中又收到請求：結束後補跑一次
+            return
         self._rebuilding = True
         try:
             self.canvas.update_idletasks()
@@ -2394,28 +2423,42 @@ class App:
             cols, card_w = self._grid_metrics(canvas_w)
             default_desc = self.desc_var.get() if hasattr(self, "desc_var") else ""
             default_loc  = self.loc_var.get()  if hasattr(self, "loc_var")  else ""
-
-            # 先記住目前選取的頁（以身分），重建後還原（涵蓋因寬度改變而重建的卡片）
             sel_page_id  = id(self._selected.page) if self._selected else None
             sel_multi_ids = {id(c.page) for c in self._selected_multi}
 
-            # 以身分建立現有卡片索引
+            pages_snapshot = list(self.pages)   # 分批期間若 pages 有變，用快照建完再補跑
+
             existing = {}
             for card in self.cards:
                 existing.setdefault(id(card.page), card)
 
-            new_cards = []
+            # 第一輪：能重用的先就地定位（快），其餘記下待建
+            new_cards = [None] * len(pages_snapshot)
+            to_create = []
             used = set()
-            for i, page in enumerate(self.pages):
+            for i, page in enumerate(pages_snapshot):
                 card = existing.get(id(page))
-                # 寬度不符（視窗縮放過）就當作要重建，避免縮圖大小錯亂
-                reuse = (card is not None and id(page) not in used
-                         and getattr(card, "_card_w_for_load", None) == card_w)
-                if reuse:
+                if (card is not None and id(page) not in used
+                        and getattr(card, "_card_w_for_load", None) == card_w):
                     used.add(id(page))
                     if card.index != i:
                         card.update_index(i)
+                    card.grid(row=i // cols, column=i % cols, padx=4, pady=4, sticky="nw")
+                    new_cards[i] = card
                 else:
+                    to_create.append(i)
+
+            # 銷毀不再需要（被刪或需重建）的舊卡片；self.cards 立刻只留有效卡片，
+            # 避免分批期間有人碰到已銷毀的卡片
+            reused_ids = set(id(c) for c in new_cards if c is not None)
+            for card in self.cards:
+                if id(card) not in reused_ids:
+                    card.destroy()
+            self.cards = [c for c in new_cards if c is not None]
+
+            def make(i):
+                try:
+                    page = pages_snapshot[i]
                     card = ThumbCard(self.thumb_frame, page, i, self, card_w=card_w)
                     if page.get("desc") is None:
                         card._syncing = True; card.desc_var.set(default_desc); card._syncing = False
@@ -2426,47 +2469,70 @@ class App:
                         page["sort_key"] = str(i+1)
                     if hasattr(card, "sort_var"):
                         card.sort_var.set(sk)
-                row, col = divmod(i, cols)
-                card.grid(row=row, column=col, padx=4, pady=4, sticky="nw")
-                new_cards.append(card)
+                    card.grid(row=i // cols, column=i % cols, padx=4, pady=4, sticky="nw")
+                    new_cards[i] = card
+                    self.cards.append(card)
+                except Exception:
+                    pass
 
-            # 銷毀不再需要的卡片（被刪除或被重建取代的舊卡片）
-            keep = set(id(c) for c in new_cards)
-            for card in self.cards:
-                if id(card) not in keep:
-                    card.destroy()
+            def finalize():
+                self.cards = [c for c in new_cards if c is not None]   # 依頁面順序整理
+                self._selected = None
+                self._selected_multi = []
+                for card in self.cards:
+                    pid = id(card.page)
+                    if pid in sel_multi_ids:
+                        card.set_selected(True); self._selected_multi.append(card)
+                    if pid == sel_page_id:
+                        card.set_selected(True); self._selected = card
+                try:
+                    self.thumb_frame.update_idletasks()
+                    self.canvas.config(scrollregion=self.canvas.bbox("all"))
+                except Exception:
+                    pass
+                if hasattr(self, "page_count_lbl"):
+                    self.page_count_lbl.config(text=f"共 {len(self.pages)} 頁")
+                desc_sync = sum(1 for c in self.cards if c.page.get("desc") is None)
+                loc_sync  = sum(1 for c in self.cards if c.page.get("loc")  is None)
+                if hasattr(self, "sync_desc_lbl"):
+                    self.sync_desc_lbl.config(text=f"將同步至 {desc_sync} 頁" if desc_sync > 0 else "")
+                if hasattr(self, "sync_loc_lbl"):
+                    self.sync_loc_lbl.config(text=f"將同步至 {loc_sync} 頁" if loc_sync > 0 else "")
+                self._rebuilding = False
+                if getattr(self, "_rebuild_pending", False):
+                    self._rebuild_pending = False
+                    self._schedule_rebuild(0)   # 期間 pages 有變，補跑一次修正
 
-            self.cards = new_cards
-
-            # 還原選取狀態（用新的卡片清單，重建的卡片也能正確反白）
-            self._selected = None
-            self._selected_multi = []
-            for card in new_cards:
-                pid = id(card.page)
-                if pid in sel_multi_ids:
-                    card.set_selected(True)
-                    self._selected_multi.append(card)
-                if pid == sel_page_id:
-                    card.set_selected(True)
-                    self._selected = card
-
-            self.thumb_frame.update_idletasks()
-            self.canvas.config(scrollregion=self.canvas.bbox("all"))
-            if hasattr(self, "page_count_lbl"):
-                self.page_count_lbl.config(text=f"共 {len(self.pages)} 頁")
-            # 更新同步計數
-            desc_sync = sum(1 for c in self.cards if c.page.get("desc") is None)
-            loc_sync  = sum(1 for c in self.cards if c.page.get("loc")  is None)
-            if hasattr(self, "sync_desc_lbl"):
-                self.sync_desc_lbl.config(text=f"將同步至 {desc_sync} 頁" if desc_sync > 0 else "")
-            if hasattr(self, "sync_loc_lbl"):
-                self.sync_loc_lbl.config(text=f"將同步至 {loc_sync} 頁" if loc_sync > 0 else "")
-        finally:
+            if len(to_create) <= 60:
+                # 少量：直接建立（避免分批的排程開銷與閃爍）
+                for i in to_create:
+                    make(i)
+                finalize()
+            else:
+                # 大量：分批建立，每批之間讓出主執行緒，畫面不會卡住
+                CHUNK = 30
+                def do_chunk(pos):
+                    if getattr(self, "_closed", False):
+                        self._rebuilding = False; return
+                    for i in to_create[pos:pos + CHUNK]:
+                        make(i)
+                    try: self.canvas.config(scrollregion=self.canvas.bbox("all"))
+                    except Exception: pass
+                    if pos + CHUNK < len(to_create):
+                        self.root.after(1, lambda: do_chunk(pos + CHUNK))
+                    else:
+                        finalize()
+                do_chunk(0)
+        except Exception:
             self._rebuilding = False
+            raise
 
     # ── 專案存檔 / 匯入 ──
     def save_project(self):
         """儲存專案：輸出 Word + 複製照片 + 存 .phk"""
+        reason = self._busy_reason()
+        if reason:
+            messagebox.showinfo("請稍候", reason); return
         if not self.template_path or not Path(self.template_path).exists():
             messagebox.showerror("錯誤", "請先選擇模板 DOCX！"); return
         if not self.pages:
@@ -2531,6 +2597,7 @@ class App:
         # 輸出 Word 到資料夾內
         word_out = str(folder_path / f"{folder_name}.docx")
         self.log(f"💾 儲存專案到：{folder_path}")
+        self._producing = True
 
         def worker():
             try:
@@ -2560,6 +2627,8 @@ class App:
                 err_msg = str(e)   # 先存起來：except 結束後 e 會被回收，lambda 是延後執行
                 self.log(f"[ERROR] {e}\n{traceback.format_exc()}")
                 self.root.after(0, lambda m=err_msg: messagebox.showerror("錯誤", m))
+            finally:
+                self._producing = False
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2662,6 +2731,9 @@ class App:
 
     # ── 執行 ──
     def run(self):
+        reason = self._busy_reason()
+        if reason:
+            messagebox.showinfo("請稍候", reason); return
         if not self.template_path or not Path(self.template_path).exists():
             messagebox.showerror("錯誤", "請先選擇模板 DOCX！"); return
         if not self.pages:
@@ -2674,6 +2746,7 @@ class App:
             output += ".docx"
             self.output_var.set(output)
 
+        self._producing = True
         self.log_text.config(state="normal")
         self.log_text.delete("1.0", tk.END)
         self.log_text.config(state="disabled")
@@ -2708,6 +2781,8 @@ class App:
                 err_msg = str(e)   # 先存起來：except 結束後 e 會被回收，lambda 是延後執行
                 self.log(f"[ERROR] {e}\n{traceback.format_exc()}")
                 self.root.after(0, lambda m=err_msg: messagebox.showerror("錯誤", m))
+            finally:
+                self._producing = False
 
         threading.Thread(target=worker, daemon=True).start()
 

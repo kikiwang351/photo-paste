@@ -32,6 +32,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 以這個 tag 的 commit 訊息作為 Release 更新說明，程式更新提示會顯示「這次更新」內容
+          $msg = git log -1 --pretty=%B
+          $msg | Out-File -FilePath notes.txt -Encoding utf8
           gh release create ${{ github.ref_name }} dist/photo-helper.exe `
             --title "版本 ${{ github.ref_name }}" `
-            --notes "自動打包版本 ${{ github.ref_name }}"
+            --notes-file notes.txt
